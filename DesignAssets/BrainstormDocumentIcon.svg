@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <path
+    d="M198 58H682L864 240V924C864 948 844 968 820 968H198C174 968 154 948 154 924V102C154 78 174 58 198 58Z"
+    fill="#111a31"
+    opacity="0.18"
+    transform="translate(0 18)"
+  />
+  <path
+    d="M198 58H682L864 240V924C864 948 844 968 820 968H198C174 968 154 948 154 924V102C154 78 174 58 198 58Z"
+    fill="#f8faff"
+    stroke="#cfd6e3"
+    stroke-width="8"
+  />
+  <path
+    d="M682 58V202C682 223 699 240 720 240H864Z"
+    fill="#e2e7f0"
+    stroke="#cfd6e3"
+    stroke-width="8"
+    stroke-linejoin="round"
+  />
+
+  <rect
+    x="242"
+    y="296"
+    width="536"
+    height="536"
+    rx="116"
+    fill="#18358e"
+    opacity="0.22"
+  />
+  <rect
+    x="242"
+    y="284"
+    width="536"
+    height="536"
+    rx="116"
+    fill="#4264dc"
+  />
+
+  <polygon points="498,534 634,409 652,429 516,554" fill="#ffffff"/>
+  <polygon points="514,533 666,624 652,646 500,555" fill="#ffffff"/>
+  <polygon points="516,553 400,675 382,657 498,535" fill="#ffffff"/>
+  <polygon points="520,543 529,713 503,715 494,545" fill="#ffffff"/>
+  <g fill="#ffffff">
+    <circle cx="507" cy="544" r="63"/>
+    <circle cx="643" cy="419" r="37"/>
+    <circle cx="659" cy="635" r="37"/>
+    <circle cx="391" cy="666" r="37"/>
+    <circle cx="516" cy="714" r="37"/>
+  </g>
+</svg>

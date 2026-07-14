@@ -62,4 +62,5 @@ fastlane/screenshots/**/*.png
 fastlane/test_output
 # Profiling / coverage
 *.profraw
-
+# macOS Finder metadata
+.DS_Store

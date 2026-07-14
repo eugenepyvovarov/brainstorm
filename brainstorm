@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec swift run --quiet --package-path "$ROOT/BrainstormPackage" brainstorm "$@"

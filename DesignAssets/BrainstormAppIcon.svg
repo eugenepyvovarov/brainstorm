@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Brainstorm app icon</title>
+  <desc>One parent mind-map pill on the left connected to three child pills on the right.</desc>
+  <defs>
+    <clipPath id="rounded-icon">
+      <rect width="1024" height="1024" rx="230"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#rounded-icon)">
+    <rect x="0" y="0" width="256" height="256" fill="#2248A2"/>
+    <rect x="256" y="0" width="256" height="256" fill="#204196"/>
+    <rect x="512" y="0" width="256" height="256" fill="#2D5BC0"/>
+    <rect x="768" y="0" width="256" height="256" fill="#254FAE"/>
+
+    <rect x="0" y="256" width="256" height="256" fill="#2751B2"/>
+    <rect x="256" y="256" width="256" height="256" fill="#3369D2"/>
+    <rect x="512" y="256" width="256" height="256" fill="#1E3A8A"/>
+    <rect x="768" y="256" width="256" height="256" fill="#234AA6"/>
+
+    <rect x="0" y="512" width="256" height="256" fill="#2852B2"/>
+    <rect x="256" y="512" width="256" height="256" fill="#21439A"/>
+    <rect x="512" y="512" width="256" height="256" fill="#2C5ABE"/>
+    <rect x="768" y="512" width="256" height="256" fill="#2B58BE"/>
+
+    <rect x="0" y="768" width="256" height="256" fill="#2A55C4"/>
+    <rect x="256" y="768" width="256" height="256" fill="#244AAC"/>
+    <rect x="512" y="768" width="256" height="256" fill="#3B82F6"/>
+    <rect x="768" y="768" width="256" height="256" fill="#3164CA"/>
+  </g>
+
+  <g fill="none" stroke="#FFFFFF" stroke-width="30" stroke-linecap="round">
+    <path d="M410 512 C500 512 500 230 620 230"/>
+    <path d="M410 512 L620 512"/>
+    <path d="M410 512 C500 512 500 794 620 794"/>
+  </g>
+
+  <rect x="110" y="412" width="300" height="200" rx="100" fill="#FFFFFF"/>
+  <rect x="620" y="160" width="290" height="140" rx="70" fill="#FFFFFF"/>
+  <rect x="620" y="442" width="290" height="140" rx="70" fill="#FFFFFF"/>
+  <rect x="620" y="724" width="290" height="140" rx="70" fill="#FFFFFF"/>
+</svg>

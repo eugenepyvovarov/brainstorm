@@ -7,8 +7,16 @@
 // ==========================================
 // Test Target Settings (Customizable by scaffold tool)
 // ==========================================
-PRODUCT_BUNDLE_IDENTIFIER = com.eugenep.MindMap
-TEST_TARGET_NAME = MindMap
+PRODUCT_BUNDLE_IDENTIFIER = com.eugenep.BrainstormUITests
+TEST_TARGET_NAME = Brainstorm
+PRODUCT_NAME = BrainstormUITests
 
-// Fix duplicate module name issue
-PRODUCT_MODULE_NAME = $(PRODUCT_NAME)UITests
+// Keep the UI-test bundle separate from the app target.
+PRODUCT_MODULE_NAME = BrainstormUITests
+INFOPLIST_FILE =
+
+// UI test bundles are injected into Xcode's generated runner. Ad-hoc hardened
+// runtime signatures treat the runner and bundle as different teams, so library
+// validation rejects the bundle before any test can start.
+ENABLE_HARDENED_RUNTIME = NO
+CODE_SIGN_ENTITLEMENTS =
