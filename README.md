@@ -8,6 +8,9 @@ Install the latest macOS release with Homebrew:
 
 ```sh
 brew install --cask eugenepyvovarov/cask/brainstorm
+
+# This works immediately after the cask installation.
+brainstorm help
 ```
 
 ![Brainstorm showing a mind map, native tabs, theme controls, icon picker, and style inspector](https://selfhosted.ninja/wp-content/uploads/2026/07/brainstorm-main-screenshot.jpeg)
@@ -37,10 +40,12 @@ brew install --cask eugenepyvovarov/cask/brainstorm
 ## CLI
 
 ```sh
-./brainstorm create plan.bs --title "Product launch"
-./brainstorm add plan.bs --parent root --title "Research"
-./brainstorm inspect plan.bs --flat --pretty
-./brainstorm export plan.bs --format pdf --output plan.pdf
+brainstorm create plan.bs --title "Product launch"
+brainstorm add plan.bs --parent root --title "Research"
+brainstorm inspect plan.bs --flat --pretty
+brainstorm export plan.bs --format pdf --output plan.pdf
 ```
 
-Open `Brainstorm.xcworkspace` in Xcode to build the macOS app. Run `./brainstorm help` for all CLI commands.
+Homebrew links the release CLI at `$(brew --prefix)/bin/brainstorm` (`/opt/homebrew/bin/brainstorm` on Apple Silicon and `/usr/local/bin/brainstorm` on Intel Macs). See [`brainstorm-skill/SKILL.md`](brainstorm-skill/SKILL.md) for installation checks, recovery steps, and agent-oriented usage.
+
+For source development, the repository-local `./brainstorm` wrapper builds and runs the CLI with Swift. Open `Brainstorm.xcworkspace` in Xcode to build the macOS app.

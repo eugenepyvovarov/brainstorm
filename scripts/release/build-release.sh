@@ -81,6 +81,59 @@ sign_app_bundle() {
     "$APP_PATH"
 }
 
+build_cli() {
+  [[ -f "$CLI_PACKAGE_PATH/Package.swift" ]] || die "Brainstorm CLI package was not found: $CLI_PACKAGE_PATH"
+
+  local architectures=(arm64 x86_64)
+  local binaries=()
+  local arch
+  local scratch_path
+  local binary_path
+
+  rm -rf "$CLI_BUILD_ROOT"
+  for arch in "${architectures[@]}"; do
+    scratch_path="$CLI_BUILD_ROOT/$arch"
+    swift build \
+      --package-path "$CLI_PACKAGE_PATH" \
+      --configuration release \
+      --arch "$arch" \
+      --scratch-path "$scratch_path"
+    binary_path="$(swift build \
+      --package-path "$CLI_PACKAGE_PATH" \
+      --configuration release \
+      --arch "$arch" \
+      --scratch-path "$scratch_path" \
+      --show-bin-path)/brainstorm"
+    [[ -x "$binary_path" ]] || die "Built Brainstorm CLI was not found for $arch: $binary_path"
+    binaries+=("$binary_path")
+  done
+
+  /usr/bin/lipo -create "${binaries[@]}" -output "$CLI_PATH"
+  local cli_architectures
+  cli_architectures="$(/usr/bin/lipo -archs "$CLI_PATH")"
+  [[ "$cli_architectures" == *arm64* && "$cli_architectures" == *x86_64* ]] || die "Brainstorm CLI is not universal: $cli_architectures"
+
+  codesign \
+    --force \
+    --timestamp \
+    --options runtime \
+    --sign "$SIGNING_IDENTITY" \
+    "$CLI_PATH"
+  codesign --verify --strict --verbose=2 "$CLI_PATH"
+}
+
+package_release() {
+  rm -f "$ARCHIVE_PATH"
+  rm -rf "$PACKAGE_DIR"
+  mkdir -p "$PACKAGE_DIR"
+  /usr/bin/ditto "$APP_PATH" "$PACKAGE_DIR/Brainstorm.app"
+  cp "$CLI_PATH" "$PACKAGE_DIR/brainstorm"
+  (
+    cd "$PACKAGE_DIR"
+    /usr/bin/ditto -ck --rsrc --sequesterRsrc . "$ARCHIVE_PATH"
+  )
+}
+
 submit_notarization() {
   local args=(notarytool submit "$ARCHIVE_PATH" --keychain-profile "$NOTARYTOOL_PROFILE" --wait)
   if [[ -f "$NOTARY_KEYCHAIN_PATH" ]]; then
@@ -102,6 +155,10 @@ readonly DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist/$RELEASE_TAG}"
 readonly DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/build/DerivedData/$RELEASE_TAG}"
 readonly ARCHIVE_NAME="Brainstorm-${RELEASE_VERSION}.zip"
 readonly ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
+readonly CLI_PACKAGE_PATH="${BRAINSTORM_CLI_PACKAGE_PATH:-$ROOT_DIR/BrainstormPackage}"
+readonly CLI_BUILD_ROOT="${CLI_BUILD_ROOT:-$DERIVED_DATA_PATH/BrainstormCLI}"
+readonly CLI_PATH="$DIST_DIR/brainstorm"
+readonly PACKAGE_DIR="$DIST_DIR/package"
 readonly CHECKSUM_PATH="$ARCHIVE_PATH.sha256"
 readonly MANIFEST_PATH="$DIST_DIR/release.json"
 readonly SIGNATURE_REPORT="$DIST_DIR/signature.txt"
@@ -138,17 +195,19 @@ bundle_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/C
 [[ "$bundle_version" == "$RELEASE_VERSION" ]] || die "Bundle version $bundle_version does not match $RELEASE_VERSION."
 [[ "$bundle_build" == "$release_build" ]] || die "Bundle build $bundle_build does not match $release_build."
 
+build_cli
 sign_app_bundle
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign -dvvv "$APP_PATH" 2>&1 | tee "$SIGNATURE_REPORT"
-grep -F "Authority=$SIGNING_IDENTITY" "$SIGNATURE_REPORT" >/dev/null || die 'The requested Developer ID identity did not sign the app.'
+codesign -dvvv "$CLI_PATH" 2>&1 | tee -a "$SIGNATURE_REPORT"
+[[ "$(grep -Fxc "Authority=$SIGNING_IDENTITY" "$SIGNATURE_REPORT")" -ge 2 ]] || die 'The requested Developer ID identity did not sign both the app and CLI.'
 
 notarized=false
 notarize_mode="$(printf '%s' "$NOTARIZE_MODE" | tr '[:upper:]' '[:lower:]')"
 case "$notarize_mode" in
   yes|true)
     [[ -n "${NOTARYTOOL_PROFILE:-}" ]] || die 'NOTARYTOOL_PROFILE is required when NOTARIZE_APP is enabled.'
-    /usr/bin/ditto -ck --rsrc --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
+    package_release
     submit_notarization
     /usr/bin/xcrun stapler staple "$APP_PATH"
     /usr/bin/xcrun stapler validate "$APP_PATH"
@@ -156,7 +215,7 @@ case "$notarize_mode" in
     ;;
   auto)
     if [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
-      /usr/bin/ditto -ck --rsrc --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
+      package_release
       submit_notarization
       /usr/bin/xcrun stapler staple "$APP_PATH"
       /usr/bin/xcrun stapler validate "$APP_PATH"
@@ -167,13 +226,18 @@ case "$notarize_mode" in
   *) die "NOTARIZE_APP must be auto, yes, or no; got $NOTARIZE_MODE." ;;
 esac
 
-rm -f "$ARCHIVE_PATH" "$CHECKSUM_PATH"
-/usr/bin/ditto -ck --rsrc --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
+rm -f "$CHECKSUM_PATH"
+package_release
 readonly SHA256="$(/usr/bin/shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
 printf '%s  %s\n' "$SHA256" "$ARCHIVE_NAME" >"$CHECKSUM_PATH"
 
 gatekeeper_status=accepted
-if ! spctl -a -vv "$APP_PATH" >"$GATEKEEPER_REPORT" 2>&1; then
+printf 'App assessment:\n' >"$GATEKEEPER_REPORT"
+if ! spctl -a -vv "$APP_PATH" >>"$GATEKEEPER_REPORT" 2>&1; then
+  gatekeeper_status=rejected
+fi
+printf '\nCLI assessment:\n' >>"$GATEKEEPER_REPORT"
+if ! spctl -a -vv "$CLI_PATH" >>"$GATEKEEPER_REPORT" 2>&1; then
   gatekeeper_status=rejected
 fi
 
@@ -189,6 +253,7 @@ cat >"$MANIFEST_PATH" <<EOF
   "archive": "$ARCHIVE_NAME",
   "build": "$release_build",
   "bundle_id": "com.eugenep.Brainstorm",
+  "cli": "brainstorm",
   "gatekeeper_status": "$gatekeeper_status",
   "notarized": $notarized,
   "sha256": "$SHA256",
