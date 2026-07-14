@@ -15,10 +15,9 @@ jobs:
       GITEA_REPOSITORY: lifeisgoodlabs/brainstorm-macos
       GITHUB_REPOSITORY: eugenepyvovarov/brainstorm
       BRAINSTORM_CODE_SIGN_IDENTITY: "Developer ID Application: Ievgen Pyvovarov (VXRLZNZH2E)"
-      BRAINSTORM_DEVELOPMENT_TEAM: VXRLZNZH2E
       NOTARIZE_APP: "true"
       REQUIRE_NOTARIZATION: "true"
-      NOTARYTOOL_PROFILE: ${{ secrets.NOTARYTOOL_PROFILE }}
+      NOTARYTOOL_PROFILE: mcp-bundler-notary
       BRAINSTORM_GITEA_TOKEN: ${{ secrets.BRAINSTORM_GITEA_TOKEN }}
       BRAINSTORM_GITHUB_TOKEN: ${{ secrets.BRAINSTORM_GITHUB_TOKEN }}
     steps:
