@@ -53,7 +53,7 @@ cask "brainstorm" do
   homepage "https://github.com/eugenepyvovarov/brainstorm"
 
   app "Brainstorm.app"
-  binary "Brainstorm.app/Contents/MacOS/brainstorm"
+  binary "Brainstorm.app/Contents/Helpers/brainstorm"
 end
 EOF
 

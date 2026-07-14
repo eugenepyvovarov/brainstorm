@@ -107,6 +107,7 @@ build_cli() {
     binaries+=("$binary_path")
   done
 
+  mkdir -p "$(dirname "$CLI_PATH")"
   /usr/bin/lipo -create "${binaries[@]}" -output "$CLI_PATH"
   local cli_architectures
   cli_architectures="$(/usr/bin/lipo -archs "$CLI_PATH")"
@@ -180,7 +181,7 @@ xcodebuild \
 
 readonly APP_PATH="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/Brainstorm.app"
 [[ -d "$APP_PATH" ]] || die "Built app was not found at $APP_PATH."
-readonly CLI_PATH="$APP_PATH/Contents/MacOS/$CLI_NAME"
+readonly CLI_PATH="$APP_PATH/Contents/Helpers/$CLI_NAME"
 
 bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
 bundle_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")"
@@ -224,7 +225,12 @@ readonly SHA256="$(/usr/bin/shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
 printf '%s  %s\n' "$SHA256" "$ARCHIVE_NAME" >"$CHECKSUM_PATH"
 
 gatekeeper_status=accepted
-if ! spctl -a -vv "$APP_PATH" >"$GATEKEEPER_REPORT" 2>&1; then
+printf 'App assessment:\n' >"$GATEKEEPER_REPORT"
+if ! spctl -a -vv "$APP_PATH" >>"$GATEKEEPER_REPORT" 2>&1; then
+  gatekeeper_status=rejected
+fi
+printf '\nCLI assessment:\n' >>"$GATEKEEPER_REPORT"
+if ! spctl -a -vv "$CLI_PATH" >>"$GATEKEEPER_REPORT" 2>&1; then
   gatekeeper_status=rejected
 fi
 
@@ -240,7 +246,7 @@ cat >"$MANIFEST_PATH" <<EOF
   "archive": "$ARCHIVE_NAME",
   "build": "$release_build",
   "bundle_id": "com.eugenep.Brainstorm",
-  "cli": "Brainstorm.app/Contents/MacOS/$CLI_NAME",
+  "cli": "Brainstorm.app/Contents/Helpers/$CLI_NAME",
   "gatekeeper_status": "$gatekeeper_status",
   "notarized": $notarized,
   "sha256": "$SHA256",
