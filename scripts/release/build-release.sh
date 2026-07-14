@@ -33,8 +33,9 @@ xcconfig_value() {
 }
 
 is_true() {
-  case "${1,,}" in
-    1|true|yes) return 0 ;;
+  # macOS ships Bash 3.2, which does not support ${var,,}.
+  case "$1" in
+    1|true|TRUE|True|yes|YES|Yes) return 0 ;;
     *) return 1 ;;
   esac
 }
