@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build one signed Brainstorm release artifact. This script is intentionally
-# Sparkle-free: Homebrew and the release pages consume the generated ZIP/SHA.
+# Sparkle-free: Homebrew and the release pages consume the generated DMG.
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly WORKSPACE_PATH="${BRAINSTORM_WORKSPACE_PATH:-$ROOT_DIR/Brainstorm.xcworkspace}"
@@ -124,7 +124,12 @@ build_cli() {
 
 package_release() {
   rm -f "$ARCHIVE_PATH"
-  /usr/bin/ditto -ck --rsrc --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
+  /usr/bin/hdiutil create \
+    -ov \
+    -format UDZO \
+    -volname Brainstorm \
+    -srcfolder "$APP_PATH" \
+    "$ARCHIVE_PATH" >/dev/null
 }
 
 submit_notarization() {
@@ -146,7 +151,7 @@ readonly RELEASE_VERSION="${major}.${minor}.${release_build}"
 readonly RELEASE_TAG="${RELEASE_TAG:-v${RELEASE_VERSION}}"
 readonly DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist/$RELEASE_TAG}"
 readonly DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-$ROOT_DIR/build/DerivedData/$RELEASE_TAG}"
-readonly ARCHIVE_NAME="Brainstorm-${RELEASE_VERSION}.zip"
+readonly ARCHIVE_NAME="Brainstorm-${RELEASE_VERSION}.dmg"
 readonly ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
 readonly CLI_PACKAGE_PATH="${BRAINSTORM_CLI_PACKAGE_PATH:-$ROOT_DIR/BrainstormPackage}"
 readonly CLI_BUILD_ROOT="${CLI_BUILD_ROOT:-$DERIVED_DATA_PATH/BrainstormCLI}"
@@ -202,16 +207,16 @@ case "$notarize_mode" in
     [[ -n "${NOTARYTOOL_PROFILE:-}" ]] || die 'NOTARYTOOL_PROFILE is required when NOTARIZE_APP is enabled.'
     package_release
     submit_notarization
-    /usr/bin/xcrun stapler staple "$APP_PATH"
-    /usr/bin/xcrun stapler validate "$APP_PATH"
+    /usr/bin/xcrun stapler staple "$ARCHIVE_PATH"
+    /usr/bin/xcrun stapler validate "$ARCHIVE_PATH"
     notarized=true
     ;;
   auto)
     if [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
       package_release
       submit_notarization
-      /usr/bin/xcrun stapler staple "$APP_PATH"
-      /usr/bin/xcrun stapler validate "$APP_PATH"
+      /usr/bin/xcrun stapler staple "$ARCHIVE_PATH"
+      /usr/bin/xcrun stapler validate "$ARCHIVE_PATH"
       notarized=true
     fi
     ;;
@@ -219,8 +224,10 @@ case "$notarize_mode" in
   *) die "NOTARIZE_APP must be auto, yes, or no; got $NOTARIZE_MODE." ;;
 esac
 
+if [[ "$notarized" != true ]]; then
+  package_release
+fi
 rm -f "$CHECKSUM_PATH"
-package_release
 readonly SHA256="$(/usr/bin/shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
 printf '%s  %s\n' "$SHA256" "$ARCHIVE_NAME" >"$CHECKSUM_PATH"
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Manually-dispatched only. Resolve the checksum from the published GitHub
-# release rather than accepting a caller-provided value.
+# Manually-dispatched only. Resolve the checksum from GitHub's published asset
+# digest rather than accepting a caller-provided value.
 
 version="${1:-}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[1-9][0-9]*$ ]] || { printf 'Usage: %s <major.minor.build>\n' "$0" >&2; exit 2; }
@@ -11,19 +11,36 @@ version="${1:-}"
 readonly TAP_REPOSITORY="${HOMEBREW_TAP_REPOSITORY:-eugenepyvovarov/homebrew-cask}"
 readonly TAP_BRANCH="${HOMEBREW_TAP_BRANCH:-main}"
 readonly TAG="v$version"
-readonly ARCHIVE="Brainstorm-$version.zip"
+readonly ARCHIVE="Brainstorm-$version.dmg"
 readonly ASSET_URL="https://github.com/eugenepyvovarov/brainstorm/releases/download/$TAG/$ARCHIVE"
-readonly CHECKSUM_URL="$ASSET_URL.sha256"
+readonly RELEASE_API_URL="https://api.github.com/repos/eugenepyvovarov/brainstorm/releases/tags/$TAG"
 
 readonly TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/brainstorm-homebrew.XXXXXX")"
 readonly ASKPASS="$TEMP_DIR/git-askpass"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-expected_sha="$(curl -fsSL "$CHECKSUM_URL" | awk 'NR == 1 { print $1 }')"
-[[ "$expected_sha" =~ ^[a-fA-F0-9]{64}$ ]] || { printf 'Published checksum is invalid: %s\n' "$CHECKSUM_URL" >&2; exit 1; }
+curl -fsSL "$RELEASE_API_URL" -o "$TEMP_DIR/release.json"
+expected_sha="$(python3 - "$TEMP_DIR/release.json" "$ARCHIVE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+release = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+asset_name = sys.argv[2]
+for asset in release.get("assets", []):
+    if asset.get("name") != asset_name:
+        continue
+    algorithm, separator, digest = asset.get("digest", "").partition(":")
+    if algorithm == "sha256" and separator:
+        print(digest)
+        raise SystemExit(0)
+raise SystemExit(f"GitHub release asset has no SHA-256 digest: {asset_name}")
+PY
+)"
+[[ "$expected_sha" =~ ^[a-fA-F0-9]{64}$ ]] || { printf 'Published GitHub asset digest is invalid: %s\n' "$ARCHIVE" >&2; exit 1; }
 curl -fsSL "$ASSET_URL" -o "$TEMP_DIR/$ARCHIVE"
 actual_sha="$(shasum -a 256 "$TEMP_DIR/$ARCHIVE" | awk '{print $1}')"
-[[ "$actual_sha" == "$expected_sha" ]] || { printf 'Downloaded archive checksum does not match its published sidecar.\n' >&2; exit 1; }
+[[ "$actual_sha" == "$expected_sha" ]] || { printf "Downloaded disk image checksum does not match GitHub's published asset digest.\\n" >&2; exit 1; }
 
 cat >"$ASKPASS" <<'EOF'
 #!/bin/sh

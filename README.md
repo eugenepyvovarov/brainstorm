@@ -13,6 +13,28 @@ brew install --cask eugenepyvovarov/cask/brainstorm
 brainstorm help
 ```
 
+## Install the agent instructions
+
+The repository includes Brainstorm agent instructions for automating `.bs` mind maps.
+
+For Codex, Claude Code, and OpenCode, install them from GitHub:
+
+```sh
+npx skills add eugenepyvovarov/brainstorm
+```
+
+Use `--global` for a user-wide install, or add `--agent codex`, `--agent claude-code`, or `--agent opencode` to target a specific agent. Start a new agent session after installation.
+
+For Grok Build, install the same `SKILL.md` into its global skills directory:
+
+```sh
+mkdir -p ~/.grok/skills/brainstorm
+curl -fsSL https://raw.githubusercontent.com/eugenepyvovarov/brainstorm/main/brainstorm-skill/SKILL.md \
+  -o ~/.grok/skills/brainstorm/SKILL.md
+```
+
+Start a new Grok Build session after installation.
+
 ![Brainstorm showing a mind map, native tabs, theme controls, icon picker, and style inspector](https://selfhosted.ninja/wp-content/uploads/2026/07/brainstorm-main-screenshot.jpeg)
 
 ## Highlights

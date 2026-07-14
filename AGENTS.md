@@ -13,3 +13,13 @@
 - The release workflow must read the Gitea job's positive integer build number and pass it as `CURRENT_PROJECT_VERSION`. It then becomes both the build number and the final version component.
 - Every released artifact must use the same resolved version: `CFBundleShortVersionString`, `CFBundleVersion`, archive filename, checksum, Git tag, Gitea Release, GitHub Release, and Homebrew Cask.
 - Resolve the Gitea job build number at build time; do not commit a CI build number back into source control. `CURRENT_PROJECT_VERSION = 1` is only a local-development fallback and must be overridden by every release job.
+
+## Feature documentation sync
+
+When adding or changing any user-facing functionality, update all three documentation surfaces in the same change before considering the work complete:
+
+1. `README.md` — explain the behavior, user workflow, CLI command, file format, or installation change.
+2. `brainstorm-skill/SKILL.md` — update agent-facing commands, automation behavior, validation rules, and recovery guidance.
+3. The live Brainstorm project page at `https://selfhosted.ninja/projects/brainstorm/` — update the relevant feature copy, FAQ, screenshots, or GIFs through the WordPress Manager skill.
+
+Round-trip the full WordPress page body when publishing an update, and verify the public page after syncing it. Keep the README and skill instructions accurate for the released behavior, not only for local development.

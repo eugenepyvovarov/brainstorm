@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish one already-built Brainstorm archive to Gitea and GitHub."""
+"""Publish one already-built Brainstorm disk image to Gitea and GitHub."""
 
 import json
 import os
@@ -75,6 +75,10 @@ def replace_assets(service: str, repository: str, release_payload: dict[str, Any
         base = os.environ["BRAINSTORM_GITEA_SERVER_URL"].rstrip("/") + "/api/v1"
         assets, _, _ = request(f"{base}/repos/{repository}/releases/{release_id}/assets", token)
         existing = {asset["name"]: asset for asset in assets or []}
+        desired = {path.name for path in files}
+        for name, asset in existing.items():
+            if name not in desired:
+                request(f"{base}/repos/{repository}/releases/{release_id}/assets/{asset['id']}", token, "DELETE", expected=(204,))
         for path in files:
             if path.name in existing:
                 request(f"{base}/repos/{repository}/releases/{release_id}/assets/{existing[path.name]['id']}", token, "DELETE", expected=(204,))
@@ -84,6 +88,10 @@ def replace_assets(service: str, repository: str, release_payload: dict[str, Any
     assets = release_payload.get("assets", [])
     existing = {asset["name"]: asset for asset in assets}
     base = "https://api.github.com"
+    desired = {path.name for path in files}
+    for name, asset in existing.items():
+        if name not in desired:
+            request(f"{base}/repos/{repository}/releases/assets/{asset['id']}", token, "DELETE", expected=(204,))
     for path in files:
         if path.name in existing:
             request(f"{base}/repos/{repository}/releases/assets/{existing[path.name]['id']}", token, "DELETE", expected=(204,))
@@ -101,14 +109,11 @@ def main() -> None:
         die("Refusing to publish an artifact that Gatekeeper has not accepted after notarization.")
 
     archive = manifest_path.parent / data["archive"]
-    checksum = archive.with_suffix(archive.suffix + ".sha256")
-    signature = manifest_path.parent / "signature.txt"
-    gatekeeper = manifest_path.parent / "gatekeeper.txt"
-    files = [archive, checksum, manifest_path, signature, gatekeeper]
+    files = [archive]
     if any(not path.is_file() for path in files):
-        die("Release artifact set is incomplete.")
+        die("Release disk image is missing.")
 
-    body = f"Developer ID signed Brainstorm {data['version']} (build {data['build']}).\n\nSHA-256: `{data['sha256']}`"
+    body = f"Developer ID-signed and notarized Brainstorm {data['version']} (build {data['build']})."
     gitea_base = os.environ["BRAINSTORM_GITEA_SERVER_URL"].rstrip("/") + "/api/v1"
     gitea_repository = os.environ["BRAINSTORM_GITEA_REPOSITORY"]
     github_repository = os.environ["BRAINSTORM_GITHUB_REPOSITORY"]
