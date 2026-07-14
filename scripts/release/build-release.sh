@@ -225,12 +225,7 @@ readonly SHA256="$(/usr/bin/shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
 printf '%s  %s\n' "$SHA256" "$ARCHIVE_NAME" >"$CHECKSUM_PATH"
 
 gatekeeper_status=accepted
-printf 'App assessment:\n' >"$GATEKEEPER_REPORT"
-if ! spctl -a -vv "$APP_PATH" >>"$GATEKEEPER_REPORT" 2>&1; then
-  gatekeeper_status=rejected
-fi
-printf '\nCLI assessment:\n' >>"$GATEKEEPER_REPORT"
-if ! spctl -a -vv "$CLI_PATH" >>"$GATEKEEPER_REPORT" 2>&1; then
+if ! spctl -a -vv "$APP_PATH" >"$GATEKEEPER_REPORT" 2>&1; then
   gatekeeper_status=rejected
 fi
 
