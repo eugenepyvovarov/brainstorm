@@ -123,13 +123,27 @@ build_cli() {
 }
 
 package_release() {
+  local staging_dir
+  local attempt
+
+  staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/brainstorm-dmg.XXXXXX")"
+  /usr/bin/ditto "$APP_PATH" "$staging_dir/Brainstorm.app"
   rm -f "$ARCHIVE_PATH"
-  /usr/bin/hdiutil create \
-    -ov \
-    -format UDZO \
-    -volname Brainstorm \
-    -srcfolder "$APP_PATH" \
-    "$ARCHIVE_PATH" >/dev/null
+  for attempt in 1 2 3; do
+    if /usr/bin/hdiutil create \
+      -ov \
+      -format UDZO \
+      -volname Brainstorm \
+      -srcfolder "$staging_dir" \
+      "$ARCHIVE_PATH" >/dev/null; then
+      rm -rf "$staging_dir"
+      return
+    fi
+    rm -f "$ARCHIVE_PATH"
+    sleep "$attempt"
+  done
+  rm -rf "$staging_dir"
+  die 'Could not create the Brainstorm disk image after three attempts.'
 }
 
 submit_notarization() {
