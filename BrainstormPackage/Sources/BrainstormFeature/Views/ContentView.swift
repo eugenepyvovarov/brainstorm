@@ -1007,11 +1007,12 @@ struct WindowChromeBridge: NSViewRepresentable {
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {
             if isClosing { return true }
-            // This bridge owns document-close semantics. Forwarding this
-            // decision to SwiftUI's previous delegate can veto a native tab
-            // close before Brainstorm shows its save prompt and removes the
-            // document from the persisted session. Keep forwarding the other
-            // delegate callbacks, but make one close authority explicit.
+            // Respect an existing AppKit delegate veto before changing the
+            // document or session. Once it accepts, Brainstorm owns the
+            // save/session decision and re-issues the native tab close below.
+            if forwardedDelegate?.windowShouldClose?(sender) == false {
+                return false
+            }
             guard shouldClose(sender) else { return false }
 
             // A tab close can be consumed by AppKit's tab controller when it

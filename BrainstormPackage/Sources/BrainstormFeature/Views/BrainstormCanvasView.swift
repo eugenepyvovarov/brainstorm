@@ -187,7 +187,10 @@ struct BrainstormCanvasView: View {
             onSelect: {
                 store.select(
                     node.id,
-                    extending: lastClickModifiers.contains(.shift)
+                    // Prefer the mouse-down snapshot because SwiftUI may
+                    // complete a tap after Shift has been released; consult
+                    // the live flags too for an in-progress physical click.
+                    extending: lastClickModifiers.contains(.shift) || NSEvent.modifierFlags.contains(.shift)
                 )
             },
             onBeginEdit: { store.beginEditing(id: node.id, selectAll: true) },

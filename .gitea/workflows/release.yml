@@ -1,0 +1,38 @@
+name: Release Brainstorm
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-ultramac
+    timeout-minutes: 45
+    env:
+      GITEA_SERVER_URL: https://git.ultramac.work
+      GITEA_REPOSITORY: lifeisgoodlabs/brainstorm-macos
+      GITHUB_REPOSITORY: eugenepyvovarov/brainstorm
+      BRAINSTORM_CODE_SIGN_IDENTITY: "Developer ID Application: Ievgen Pyvovarov (VXRLZNZH2E)"
+      BRAINSTORM_DEVELOPMENT_TEAM: VXRLZNZH2E
+      NOTARIZE_APP: "true"
+      REQUIRE_NOTARIZATION: "true"
+      NOTARYTOOL_PROFILE: ${{ secrets.NOTARYTOOL_PROFILE }}
+      GITEA_RELEASE_TOKEN: ${{ secrets.GITEA_RELEASE_TOKEN }}
+      GITHUB_RELEASE_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}
+    steps:
+      - name: Check out the release commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITEA_RELEASE_TOKEN }}
+
+      - name: Build, sign, and package one release artifact
+        run: RELEASE_BUILD="${{ gitea.run_number }}" scripts/release/build-release.sh
+
+      - name: Publish the same archive to Gitea and GitHub Releases
+        run: |
+          manifest="$(find dist -maxdepth 2 -name release.json -print -quit)"
+          test -n "$manifest"
+          scripts/release/publish-release.sh "$manifest"

@@ -1,0 +1,25 @@
+name: Publish Brainstorm Homebrew Cask
+
+"on":
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published Brainstorm version to add to the Homebrew Cask, for example 1.0.12
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  homebrew:
+    runs-on: macos-ultramac
+    timeout-minutes: 15
+    env:
+      HOMEBREW_TAP_REPOSITORY: eugenepyvovarov/homebrew-cask
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Check out release tooling
+        uses: actions/checkout@v4
+
+      - name: Verify published release and update the Homebrew Cask
+        run: scripts/release/publish-homebrew-cask.sh "${{ inputs.version }}"

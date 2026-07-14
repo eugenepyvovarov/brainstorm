@@ -26,6 +26,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		8BF5A1002DF0000000FBD189 /* Exceptions for "BrainstormApp" folder in "Brainstorm" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 8BC2655B2DEDD3F400F279A4 /* Brainstorm */;
+		};
 		8BD71C1E2DEE424400CEDD92 /* Exceptions for "Config" folder in "Brainstorm" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -49,6 +56,9 @@
 		};
 		8BC2655E2DEDD3F400F279A4 /* BrainstormApp */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8BF5A1002DF0000000FBD189 /* Exceptions for "BrainstormApp" folder in "Brainstorm" target */,
+			);
 			path = BrainstormApp;
 			sourceTree = "<group>";
 		};
