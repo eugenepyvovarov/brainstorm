@@ -6,7 +6,7 @@ set -euo pipefail
 
 version="${1:-}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[1-9][0-9]*$ ]] || { printf 'Usage: %s <major.minor.build>\n' "$0" >&2; exit 2; }
-: "${HOMEBREW_TAP_TOKEN:?HOMEBREW_TAP_TOKEN is required to update the tap.}"
+: "${BRAINSTORM_HOMEBREW_TOKEN:?BRAINSTORM_HOMEBREW_TOKEN is required to update the tap.}"
 
 readonly TAP_REPOSITORY="${HOMEBREW_TAP_REPOSITORY:-eugenepyvovarov/homebrew-cask}"
 readonly TAP_BRANCH="${HOMEBREW_TAP_BRANCH:-main}"
@@ -29,7 +29,7 @@ cat >"$ASKPASS" <<'EOF'
 #!/bin/sh
 case "$1" in
   *Username*) printf '%s\n' x-access-token ;;
-  *) printf '%s\n' "${HOMEBREW_TAP_TOKEN:?}" ;;
+  *) printf '%s\n' "${BRAINSTORM_HOMEBREW_TOKEN:?}" ;;
 esac
 EOF
 chmod 700 "$ASKPASS"

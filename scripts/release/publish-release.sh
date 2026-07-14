@@ -6,8 +6,8 @@ manifest_path="${1:-}"
 [[ -n "$manifest_path" ]] || { printf 'Usage: %s <release.json>\n' "$0" >&2; exit 2; }
 [[ -f "$manifest_path" ]] || { printf 'Manifest not found: %s\n' "$manifest_path" >&2; exit 2; }
 
-: "${GITEA_RELEASE_TOKEN:?GITEA_RELEASE_TOKEN is required to create the Gitea Release.}"
-: "${GITHUB_RELEASE_TOKEN:?GITHUB_RELEASE_TOKEN is required to create the GitHub Release.}"
+: "${BRAINSTORM_GITEA_TOKEN:?BRAINSTORM_GITEA_TOKEN is required to create the Gitea Release.}"
+: "${BRAINSTORM_GITHUB_TOKEN:?BRAINSTORM_GITHUB_TOKEN is required to create the GitHub Release.}"
 
 release_tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag"])' "$manifest_path")"
 source_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_commit"])' "$manifest_path")"

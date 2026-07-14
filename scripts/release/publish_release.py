@@ -110,10 +110,10 @@ def main() -> None:
 
     body = f"Developer ID signed Brainstorm {data['version']} (build {data['build']}).\n\nSHA-256: `{data['sha256']}`"
     gitea_base = os.environ["GITEA_SERVER_URL"].rstrip("/") + "/api/v1"
-    gitea = release(gitea_base, os.environ["GITEA_REPOSITORY"], os.environ["GITEA_RELEASE_TOKEN"], data["tag"], data["source_commit"], data["version"], body)
-    github = release("https://api.github.com", os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_RELEASE_TOKEN"], data["tag"], data["source_commit"], data["version"], body)
-    replace_assets("gitea", os.environ["GITEA_REPOSITORY"], gitea, os.environ["GITEA_RELEASE_TOKEN"], files)
-    replace_assets("github", os.environ["GITHUB_REPOSITORY"], github, os.environ["GITHUB_RELEASE_TOKEN"], files)
+    gitea = release(gitea_base, os.environ["GITEA_REPOSITORY"], os.environ["BRAINSTORM_GITEA_TOKEN"], data["tag"], data["source_commit"], data["version"], body)
+    github = release("https://api.github.com", os.environ["GITHUB_REPOSITORY"], os.environ["BRAINSTORM_GITHUB_TOKEN"], data["tag"], data["source_commit"], data["version"], body)
+    replace_assets("gitea", os.environ["GITEA_REPOSITORY"], gitea, os.environ["BRAINSTORM_GITEA_TOKEN"], files)
+    replace_assets("github", os.environ["GITHUB_REPOSITORY"], github, os.environ["BRAINSTORM_GITHUB_TOKEN"], files)
     print(json.dumps({"gitea_release": gitea.get("html_url"), "github_release": github.get("html_url"), "tag": data["tag"]}, sort_keys=True))
 
 

@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 15
     env:
       HOMEBREW_TAP_REPOSITORY: eugenepyvovarov/homebrew-cask
-      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      BRAINSTORM_HOMEBREW_TOKEN: ${{ secrets.BRAINSTORM_HOMEBREW_TOKEN }}
     steps:
       - name: Check out release tooling
         uses: actions/checkout@v4

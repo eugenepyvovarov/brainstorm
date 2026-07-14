@@ -19,14 +19,14 @@ jobs:
       NOTARIZE_APP: "true"
       REQUIRE_NOTARIZATION: "true"
       NOTARYTOOL_PROFILE: ${{ secrets.NOTARYTOOL_PROFILE }}
-      GITEA_RELEASE_TOKEN: ${{ secrets.GITEA_RELEASE_TOKEN }}
-      GITHUB_RELEASE_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}
+      BRAINSTORM_GITEA_TOKEN: ${{ secrets.BRAINSTORM_GITEA_TOKEN }}
+      BRAINSTORM_GITHUB_TOKEN: ${{ secrets.BRAINSTORM_GITHUB_TOKEN }}
     steps:
       - name: Check out the release commit
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITEA_RELEASE_TOKEN }}
+          token: ${{ secrets.BRAINSTORM_GITEA_TOKEN }}
 
       - name: Build, sign, and package one release artifact
         run: RELEASE_BUILD="${{ gitea.run_number }}" scripts/release/build-release.sh
