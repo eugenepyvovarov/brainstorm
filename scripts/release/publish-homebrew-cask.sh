@@ -34,7 +34,12 @@ esac
 EOF
 chmod 700 "$ASKPASS"
 
-GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git clone --branch "$TAP_BRANCH" "https://github.com/$TAP_REPOSITORY.git" "$TEMP_DIR/tap"
+# The shared cask tap has a large history. Fetch only the cask this release
+# manages, which keeps the manual workflow responsive and avoids downloading
+# unrelated tap contents on the macOS runner.
+GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git clone --depth 1 --filter=blob:none --no-checkout --branch "$TAP_BRANCH" "https://github.com/$TAP_REPOSITORY.git" "$TEMP_DIR/tap"
+git -C "$TEMP_DIR/tap" sparse-checkout set --no-cone Casks/brainstorm.rb
+git -C "$TEMP_DIR/tap" checkout
 mkdir -p "$TEMP_DIR/tap/Casks"
 cat >"$TEMP_DIR/tap/Casks/brainstorm.rb" <<EOF
 cask "brainstorm" do
