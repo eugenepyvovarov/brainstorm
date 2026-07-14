@@ -73,7 +73,6 @@ sign_app_bundle() {
   [[ -f "$CODESIGN_ENTITLEMENTS_PATH" ]] || die "Codesign entitlements were not found: $CODESIGN_ENTITLEMENTS_PATH"
   codesign \
     --force \
-    --deep \
     --timestamp \
     --options runtime \
     --entitlements "$CODESIGN_ENTITLEMENTS_PATH" \
@@ -124,14 +123,7 @@ build_cli() {
 
 package_release() {
   rm -f "$ARCHIVE_PATH"
-  rm -rf "$PACKAGE_DIR"
-  mkdir -p "$PACKAGE_DIR"
-  /usr/bin/ditto "$APP_PATH" "$PACKAGE_DIR/Brainstorm.app"
-  cp "$CLI_PATH" "$PACKAGE_DIR/brainstorm"
-  (
-    cd "$PACKAGE_DIR"
-    /usr/bin/ditto -ck --rsrc --sequesterRsrc . "$ARCHIVE_PATH"
-  )
+  /usr/bin/ditto -ck --rsrc --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
 }
 
 submit_notarization() {
@@ -157,8 +149,7 @@ readonly ARCHIVE_NAME="Brainstorm-${RELEASE_VERSION}.zip"
 readonly ARCHIVE_PATH="$DIST_DIR/$ARCHIVE_NAME"
 readonly CLI_PACKAGE_PATH="${BRAINSTORM_CLI_PACKAGE_PATH:-$ROOT_DIR/BrainstormPackage}"
 readonly CLI_BUILD_ROOT="${CLI_BUILD_ROOT:-$DERIVED_DATA_PATH/BrainstormCLI}"
-readonly CLI_PATH="$DIST_DIR/brainstorm"
-readonly PACKAGE_DIR="$DIST_DIR/package"
+readonly CLI_NAME="brainstorm"
 readonly CHECKSUM_PATH="$ARCHIVE_PATH.sha256"
 readonly MANIFEST_PATH="$DIST_DIR/release.json"
 readonly SIGNATURE_REPORT="$DIST_DIR/signature.txt"
@@ -189,6 +180,7 @@ xcodebuild \
 
 readonly APP_PATH="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/Brainstorm.app"
 [[ -d "$APP_PATH" ]] || die "Built app was not found at $APP_PATH."
+readonly CLI_PATH="$APP_PATH/Contents/MacOS/$CLI_NAME"
 
 bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
 bundle_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")"
@@ -232,12 +224,7 @@ readonly SHA256="$(/usr/bin/shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
 printf '%s  %s\n' "$SHA256" "$ARCHIVE_NAME" >"$CHECKSUM_PATH"
 
 gatekeeper_status=accepted
-printf 'App assessment:\n' >"$GATEKEEPER_REPORT"
-if ! spctl -a -vv "$APP_PATH" >>"$GATEKEEPER_REPORT" 2>&1; then
-  gatekeeper_status=rejected
-fi
-printf '\nCLI assessment:\n' >>"$GATEKEEPER_REPORT"
-if ! spctl -a -vv "$CLI_PATH" >>"$GATEKEEPER_REPORT" 2>&1; then
+if ! spctl -a -vv "$APP_PATH" >"$GATEKEEPER_REPORT" 2>&1; then
   gatekeeper_status=rejected
 fi
 
@@ -253,7 +240,7 @@ cat >"$MANIFEST_PATH" <<EOF
   "archive": "$ARCHIVE_NAME",
   "build": "$release_build",
   "bundle_id": "com.eugenep.Brainstorm",
-  "cli": "brainstorm",
+  "cli": "Brainstorm.app/Contents/MacOS/$CLI_NAME",
   "gatekeeper_status": "$gatekeeper_status",
   "notarized": $notarized,
   "sha256": "$SHA256",
