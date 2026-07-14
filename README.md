@@ -2,7 +2,13 @@
 
 **Brainstorm** is a native macOS mind-map editor for turning rough ideas into clear, editable plans. It pairs a fast keyboard-first canvas with rich node styling, native document tabs, portable `.bs` files, and a JSON-first CLI for scripts and AI agents.
 
-[Gitea](https://git.ultramac.work/lifeisgoolabs/brainstorm-macos) · [GitHub mirror](https://github.com/eugenepyvovarov/brainstorm) · [MIT License](LICENSE)
+## Install
+
+Install the latest macOS release with Homebrew:
+
+```sh
+brew install --cask eugenepyvovarov/cask/brainstorm
+```
 
 ![Brainstorm showing a mind map, native tabs, theme controls, icon picker, and style inspector](https://selfhosted.ninja/wp-content/uploads/2026/07/brainstorm-main-screenshot.jpeg)
 
