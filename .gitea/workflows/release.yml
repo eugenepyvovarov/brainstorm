@@ -11,9 +11,9 @@ jobs:
     runs-on: macos-ultramac
     timeout-minutes: 45
     env:
-      GITEA_SERVER_URL: https://git.ultramac.work
-      GITEA_REPOSITORY: lifeisgoodlabs/brainstorm-macos
-      GITHUB_REPOSITORY: eugenepyvovarov/brainstorm
+      BRAINSTORM_GITEA_SERVER_URL: https://git.ultramac.work
+      BRAINSTORM_GITEA_REPOSITORY: lifeisgoodlabs/brainstorm-macos
+      BRAINSTORM_GITHUB_REPOSITORY: eugenepyvovarov/brainstorm
       BRAINSTORM_CODE_SIGN_IDENTITY: "Developer ID Application: Ievgen Pyvovarov (VXRLZNZH2E)"
       NOTARIZE_APP: "true"
       REQUIRE_NOTARIZATION: "true"

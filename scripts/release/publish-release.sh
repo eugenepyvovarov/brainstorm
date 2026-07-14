@@ -21,7 +21,7 @@ fi
 
 git -C "$ROOT_DIR" push origin "refs/tags/$release_tag"
 
-GITEA_SERVER_URL="${GITEA_SERVER_URL:-https://git.ultramac.work}" \
-GITEA_REPOSITORY="${GITEA_REPOSITORY:-lifeisgoodlabs/brainstorm-macos}" \
-GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-eugenepyvovarov/brainstorm}" \
+export BRAINSTORM_GITEA_SERVER_URL="${BRAINSTORM_GITEA_SERVER_URL:-https://git.ultramac.work}"
+export BRAINSTORM_GITEA_REPOSITORY="${BRAINSTORM_GITEA_REPOSITORY:-lifeisgoodlabs/brainstorm-macos}"
+export BRAINSTORM_GITHUB_REPOSITORY="${BRAINSTORM_GITHUB_REPOSITORY:-eugenepyvovarov/brainstorm}"
 python3 "$ROOT_DIR/scripts/release/publish_release.py" "$manifest_path"

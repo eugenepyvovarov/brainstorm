@@ -72,7 +72,7 @@ def release(base: str, repository: str, token: str, tag: str, commit: str, versi
 def replace_assets(service: str, repository: str, release_payload: dict[str, Any], token: str, files: list[Path]) -> None:
     release_id = release_payload["id"]
     if service == "gitea":
-        base = os.environ["GITEA_SERVER_URL"].rstrip("/") + "/api/v1"
+        base = os.environ["BRAINSTORM_GITEA_SERVER_URL"].rstrip("/") + "/api/v1"
         assets, _, _ = request(f"{base}/repos/{repository}/releases/{release_id}/assets", token)
         existing = {asset["name"]: asset for asset in assets or []}
         for path in files:
@@ -109,11 +109,13 @@ def main() -> None:
         die("Release artifact set is incomplete.")
 
     body = f"Developer ID signed Brainstorm {data['version']} (build {data['build']}).\n\nSHA-256: `{data['sha256']}`"
-    gitea_base = os.environ["GITEA_SERVER_URL"].rstrip("/") + "/api/v1"
-    gitea = release(gitea_base, os.environ["GITEA_REPOSITORY"], os.environ["BRAINSTORM_GITEA_TOKEN"], data["tag"], data["source_commit"], data["version"], body)
-    github = release("https://api.github.com", os.environ["GITHUB_REPOSITORY"], os.environ["BRAINSTORM_GITHUB_TOKEN"], data["tag"], data["source_commit"], data["version"], body)
-    replace_assets("gitea", os.environ["GITEA_REPOSITORY"], gitea, os.environ["BRAINSTORM_GITEA_TOKEN"], files)
-    replace_assets("github", os.environ["GITHUB_REPOSITORY"], github, os.environ["BRAINSTORM_GITHUB_TOKEN"], files)
+    gitea_base = os.environ["BRAINSTORM_GITEA_SERVER_URL"].rstrip("/") + "/api/v1"
+    gitea_repository = os.environ["BRAINSTORM_GITEA_REPOSITORY"]
+    github_repository = os.environ["BRAINSTORM_GITHUB_REPOSITORY"]
+    gitea = release(gitea_base, gitea_repository, os.environ["BRAINSTORM_GITEA_TOKEN"], data["tag"], data["source_commit"], data["version"], body)
+    github = release("https://api.github.com", github_repository, os.environ["BRAINSTORM_GITHUB_TOKEN"], data["tag"], data["source_commit"], data["version"], body)
+    replace_assets("gitea", gitea_repository, gitea, os.environ["BRAINSTORM_GITEA_TOKEN"], files)
+    replace_assets("github", github_repository, github, os.environ["BRAINSTORM_GITHUB_TOKEN"], files)
     print(json.dumps({"gitea_release": gitea.get("html_url"), "github_release": github.get("html_url"), "tag": data["tag"]}, sort_keys=True))
 
 
