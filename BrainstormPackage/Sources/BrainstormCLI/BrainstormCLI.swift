@@ -16,7 +16,9 @@ struct BrainstormCLI {
             let command = arguments.removeFirst()
             let options = try CLIOptions(arguments)
             let response = try run(command: command, options: options)
-            try writeJSON(response, pretty: options.hasFlag("pretty"), to: .standardOutput)
+            if command != "export" || options.value("output") != "-" {
+                try writeJSON(response, pretty: options.hasFlag("pretty"), to: .standardOutput)
+            }
         } catch {
             let failure = CLIErrorResponse(
                 ok: false,
@@ -233,15 +235,27 @@ struct BrainstormCLI {
         let url = try documentURL(options)
         let file = try loadValidated(url)
         guard let format = BrainstormExportFormat(rawValue: try options.required("format").lowercased()) else {
-            throw CLIUsageError("--format must be png or pdf.")
+            throw CLIUsageError("--format must be png, pdf, markdown, mermaid, or plantuml.")
         }
-        let output = URL(fileURLWithPath: try options.required("output")).standardizedFileURL
+        let outputPath = try options.required("output")
         let theme = AppTheme.theme(id: file.themeID ?? AppTheme.system.id)
         let appearance = options.value("appearance")?.lowercased()
         guard appearance == nil || appearance == "light" || appearance == "dark" else {
             throw CLIUsageError("--appearance must be light or dark.")
         }
         let scheme: ColorScheme = appearance == "dark" || (appearance == nil && theme.isDark) ? .dark : .light
+        if outputPath == "-" {
+            let data = try BrainstormExporter.data(
+                root: file.root,
+                theme: theme,
+                colorScheme: scheme,
+                format: format
+            )
+            try FileHandle.standardOutput.write(contentsOf: data)
+            return CLIResponse(command: "export", file: url.path, changed: false, output: "-")
+        }
+
+        let output = URL(fileURLWithPath: outputPath).standardizedFileURL
         try BrainstormExporter.write(
             root: file.root,
             theme: theme,
@@ -487,12 +501,14 @@ struct BrainstormCLI {
                         [--font-size <n|none>] [--bold true|false] [--italic true|false]
       brainstorm move <file.bs> --node <uuid> --parent <root|uuid> [--index <n>]
       brainstorm delete <file.bs> --node <uuid>
-      brainstorm export <file.bs> --format png|pdf --output <path> [--appearance light|dark]
+      brainstorm export <file.bs> --format png|pdf|markdown|mermaid|plantuml --output <path|->
+                        [--appearance light|dark]
       brainstorm validate <file.bs>
       brainstorm apply <file.bs> [--input <request.json|->] [--dry-run]
 
     Mutations save atomically by default. Add --dry-run to preview JSON without writing.
-    Every command emits machine-readable JSON; failures emit JSON to stderr and exit nonzero.
+    Use --output - to stream exported bytes to stdout without a JSON response.
+    Other successes emit machine-readable JSON; failures emit JSON to stderr and exit nonzero.
     """
 }
 

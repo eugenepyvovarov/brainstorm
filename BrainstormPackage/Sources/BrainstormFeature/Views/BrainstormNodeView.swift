@@ -165,7 +165,8 @@ struct BrainstormNodeView: View {
             )
             .scaleEffect(isFreeDragging ? 1.03 : 1)
             .contentShape(nodeShape)
-            // Free-position is the primary drag. Reparent is ⌘-drop (handled in canvas).
+            // Free-position is the primary drag. Dropping directly onto a node
+            // requests a confirmed reparent (handled in the canvas).
             // System `.draggable` is intentionally not used — it stole gestures from free move.
             .gesture(freePositionGesture)
             .onTapGesture(count: 2) {
@@ -176,8 +177,8 @@ struct BrainstormNodeView: View {
             .accessibilityLabel(displayTitle)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
             .help(isRoot
-                  ? "Drag to free-position · ⌘-drop on a node to reparent"
-                  : "Drag among siblings to reorder (gap line) · drag aside to free-position · ⌘-drop to reparent")
+                  ? "Drag to free-position"
+                  : "Drag onto a node to change its parent · drag among siblings to reorder · drag aside to free-position")
     }
 
     private var cardInterior: some View {

@@ -1724,6 +1724,76 @@ struct DocumentSessionTests {
     }
 }
 
+@Suite("Text exports")
+struct BrainstormTextExporterTests {
+    private var root: BrainstormNode {
+        var hidden = BrainstormNode(title: "Hidden [task]")
+        hidden.children = [BrainstormNode(title: "Final")]
+        return BrainstormNode(
+            title: "Roadmap & \"Launch\"",
+            isExpanded: true,
+            children: [
+                BrainstormNode(
+                    title: "Write *docs*\nReview <copy>",
+                    isExpanded: false,
+                    children: [hidden]
+                ),
+                BrainstormNode(title: "Ship")
+            ]
+        )
+    }
+
+    @Test func markdownRepeatsRootAsHeadingAndTopLevelBullet() {
+        let output = BrainstormTextExporter.string(root: root, format: .markdown)
+
+        #expect(output == """
+        # Roadmap & "Launch"
+
+        - Roadmap & "Launch"
+            - Write \\*docs\\*<br>Review &lt;copy&gt;
+                - Hidden \\[task\\]
+                    - Final
+            - Ship
+
+        """)
+    }
+
+    @Test func mermaidUsesQuotedLabelsAndIncludesCollapsedDescendants() {
+        let output = BrainstormTextExporter.string(root: root, format: .mermaid)
+
+        #expect(output == """
+        mindmap
+          n0["Roadmap &amp; &quot;Launch&quot;"]
+            n1["Write *docs*<br/>Review &lt;copy&gt;"]
+              n2["Hidden [task]"]
+                n3["Final"]
+            n4["Ship"]
+
+        """)
+    }
+
+    @Test func plantUMLUsesNativeMindmapDepthAndIncludesCollapsedDescendants() {
+        let output = BrainstormTextExporter.string(root: root, format: .plantuml)
+
+        #expect(output == """
+        @startmindmap
+        * Roadmap & "Launch"
+        ** Write *docs*\\nReview ~<copy~>
+        *** Hidden [task]
+        **** Final
+        ** Ship
+        @endmindmap
+
+        """)
+    }
+
+    @Test func textFormatsUseExpectedFileExtensions() {
+        #expect(BrainstormExportFormat.markdown.fileExtension == "md")
+        #expect(BrainstormExportFormat.mermaid.fileExtension == "mmd")
+        #expect(BrainstormExportFormat.plantuml.fileExtension == "puml")
+    }
+}
+
 @Suite("ExternalFileChangePolicy")
 struct ExternalFileChangePolicyTests {
     @Test func unchangedBytesDoNothing() {

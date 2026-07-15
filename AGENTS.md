@@ -23,3 +23,10 @@ When adding or changing any user-facing functionality, update all three document
 3. The live Brainstorm project page at `https://selfhosted.ninja/projects/brainstorm/` — update the relevant feature copy, FAQ, screenshots, or GIFs through the WordPress Manager skill.
 
 Round-trip the full WordPress page body when publishing an update, and verify the public page after syncing it. Keep the README and skill instructions accurate for the released behavior, not only for local development.
+
+## Joplin project notes
+
+- Remote notebook: `Y26/P/Brainstorm` (`bc23eb39a5514fe59b4c27609ede99b9`).
+- Local recursive sync directory: `joplin-notes/brainstorm`.
+- Run `jnm sync pull` before relying on project notes.
+- After editing synced notes, run `jnm sync status` and `jnm sync push`; never force a conflict without explicit approval.

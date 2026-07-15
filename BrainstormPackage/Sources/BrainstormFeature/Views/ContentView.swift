@@ -84,7 +84,7 @@ public struct ContentView: View {
                     DispatchQueue.main.async { self.canvasFocused = true }
                 }
             },
-            onAutosave: { scheduleAutosave() },
+            onAutosave: { immediate in scheduleAutosave(immediate: immediate) },
             onUndo: {
                 store.undo()
                 syncFocusWithEditingState()
@@ -235,7 +235,7 @@ public struct ContentView: View {
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
-            .help("Export complete map as PNG or PDF")
+            .help("Export the complete map as an image, document, or text mind map")
             .focusable(false)
         }
     }
@@ -566,7 +566,7 @@ public struct ContentView: View {
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         panel.allowsOtherFileTypes = false
-        panel.message = "Export the complete mind map as \(format.rawValue.uppercased())"
+        panel.message = "Export the complete mind map as \(format.displayName)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         do {
@@ -646,7 +646,7 @@ private struct ContentViewChrome: ViewModifier {
     let onDisappear: () -> Void
     let onEditingChange: (UUID?) -> Void
     let onSelectionChange: () -> Void
-    let onAutosave: () -> Void
+    let onAutosave: (_ immediate: Bool) -> Void
     let onUndo: () -> Void
     let onRedo: () -> Void
     let onSave: (Bool) -> Void
@@ -736,7 +736,7 @@ private struct ContentViewLifecycle: ViewModifier {
     let onDisappear: () -> Void
     let onEditingChange: (UUID?) -> Void
     let onSelectionChange: () -> Void
-    let onAutosave: () -> Void
+    let onAutosave: (_ immediate: Bool) -> Void
 
     func body(content: Content) -> some View {
         content
@@ -744,19 +744,25 @@ private struct ContentViewLifecycle: ViewModifier {
             .onDisappear(perform: onDisappear)
             .onChange(of: store.editingID) { _, newValue in
                 onEditingChange(newValue)
-                onAutosave()
+                onAutosave(false)
             }
             .onChange(of: store.selectedID) { _, _ in
                 onSelectionChange()
             }
             .onChange(of: store.structureEpoch) { _, _ in
-                onAutosave()
+                onAutosave(false)
             }
             .onChange(of: store.themeID) { _, _ in
-                onAutosave()
+                onAutosave(false)
             }
             .onChange(of: store.editingDraft) { _, _ in
-                onAutosave()
+                onAutosave(false)
+            }
+            // historyEpoch advances only after a completed undoable action
+            // (including undo/redo), so persist immediately without writing
+            // once per live drag frame or title keystroke.
+            .onChange(of: store.historyEpoch) { _, _ in
+                onAutosave(true)
             }
     }
 }
@@ -1383,7 +1389,7 @@ private struct KeyboardHelpSheet: View {
                         shortcutRow("⌘T", "New map as a tab in this window")
                         shortcutRow("⌘N", "New map in a separate window")
                         shortcutRow("⌘W", "Close current tab / window (asks to save)")
-                        shortcutRow("Export", "Save the complete map as a high-resolution PNG or one-page PDF")
+                        shortcutRow("Export", "Save the complete map as PNG, PDF, Markdown, Mermaid, or PlantUML")
                         shortcutRow("drag tab", "Pull a tab out into its own window")
                         Text("Use Window → Show Tab Bar if the tab strip is hidden. Window → Merge All Windows recombines open maps.")
                             .foregroundStyle(.secondary)

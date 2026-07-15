@@ -31,6 +31,12 @@ playground.xcworkspace
 
 .build/
 
+# Local agent configuration and Joplin sync state (may contain credentials).
+.agents/
+.skills-data/
+joplin-notes/
+skills-lock.json
+
 # CocoaPods
 #
 # We recommend against adding the Pods directory to your .gitignore. However

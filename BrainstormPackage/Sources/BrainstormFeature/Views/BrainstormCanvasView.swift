@@ -8,6 +8,8 @@ struct BrainstormCanvasView: View {
 
     // MARK: - State
     @State private var dropTargetID: UUID?
+    /// A valid node-on-node drop waiting for user confirmation.
+    @State private var pendingReparent: PendingReparent?
     /// Sibling reorder insertion while free-dragging (no ⌘).
     @State private var reorderTarget: SiblingReorderTarget?
     @State private var panOffset: CGSize = .zero
@@ -88,6 +90,18 @@ struct BrainstormCanvasView: View {
             focusedNodeID.wrappedValue = nil
             guard let newID else { return }
             DispatchQueue.main.async { focusedNodeID.wrappedValue = newID }
+        }
+        .alert("Change Parent?", isPresented: pendingReparentAlertBinding) {
+            Button("Move") {
+                confirmPendingReparent()
+            }
+            Button("Cancel", role: .cancel) {
+                pendingReparent = nil
+            }
+        } message: {
+            if let pendingReparent {
+                Text("Move \(displayName(for: pendingReparent.nodeID)) under \(displayName(for: pendingReparent.parentID))?")
+            }
         }
     }
 
@@ -321,15 +335,17 @@ struct BrainstormCanvasView: View {
         let doc = documentPoint(fromCanvas: location, zoom: store.zoomScale)
         let commandHeld = NSEvent.modifierFlags.contains(.command)
 
-        // ⌘ held over another node → reparent highlight (optional secondary action).
-        if commandHeld {
+        // Dropping directly onto another node requests a reparent. Keep ⌘ as
+        // a compatibility shortcut, but it is no longer required.
+        let hit = hitTestNode(at: doc, layout: layout, except: nodeID, freeDrag: freeDrag)
+        if let hit, !store.isDescendant(hit, of: nodeID) {
             reorderTarget = nil
-            let hit = hitTestNode(at: doc, layout: layout, except: nodeID, freeDrag: freeDrag)
-            if let hit, !store.isDescendant(hit, of: nodeID) {
-                dropTargetID = hit
-            } else {
-                dropTargetID = nil
-            }
+            dropTargetID = hit
+        } else if commandHeld {
+            // Holding ⌘ outside a node keeps the old behavior: it disables
+            // sibling reordering and allows a normal free-position drop.
+            reorderTarget = nil
+            dropTargetID = nil
         } else {
             dropTargetID = nil
             // Same-level reorder: insertion line among siblings when pointer is in their column.
@@ -350,21 +366,18 @@ struct BrainstormCanvasView: View {
                 width: store.node(id: nodeID)?.offsetX ?? 0,
                 height: store.node(id: nodeID)?.offsetY ?? 0
             )
-        let wantsReparent = NSEvent.modifierFlags.contains(.command)
         let doc = documentPoint(fromCanvas: location, zoom: store.zoomScale)
         let pendingReorder = reorderTarget
-        let hit = wantsReparent
-            ? hitTestNode(at: doc, layout: layout, except: nodeID, freeDrag: freeDrag)
-            : nil
+        let hit = hitTestNode(at: doc, layout: layout, except: nodeID, freeDrag: freeDrag)
 
         freeDrag = nil
         dropTargetID = nil
         reorderTarget = nil
         suppressAutoCenter = false
 
-        // 1) ⌘-drop onto another node rewires parent (does not free-position).
-        if let hit, wantsReparent, !store.isDescendant(hit, of: nodeID), hit != nodeID {
-            store.rewire(nodeID: nodeID, onto: hit)
+        // 1) Drop onto another node rewires parent after confirmation.
+        if let hit, !store.isDescendant(hit, of: nodeID), hit != nodeID {
+            pendingReparent = PendingReparent(nodeID: nodeID, parentID: hit)
             NSCursor.arrow.set()
             return
         }
@@ -387,6 +400,27 @@ struct BrainstormCanvasView: View {
             )
         }
         NSCursor.arrow.set()
+    }
+
+    private var pendingReparentAlertBinding: Binding<Bool> {
+        Binding(
+            get: { pendingReparent != nil },
+            set: { isPresented in
+                if !isPresented { pendingReparent = nil }
+            }
+        )
+    }
+
+    private func displayName(for id: UUID) -> String {
+        guard let node = store.node(id: id) else { return "this node" }
+        let title = node.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? (id == store.root.id ? BrainstormNode.mainPlaceholder : BrainstormNode.nodePlaceholder) : title
+    }
+
+    private func confirmPendingReparent() {
+        guard let pendingReparent else { return }
+        self.pendingReparent = nil
+        store.rewire(nodeID: pendingReparent.nodeID, onto: pendingReparent.parentID)
     }
 
     // MARK: - Sibling reorder
@@ -582,6 +616,11 @@ private struct FreeDragSession {
     let nodeID: UUID
     let baseOffset: CGSize
     var delta: CGSize
+}
+
+private struct PendingReparent {
+    let nodeID: UUID
+    let parentID: UUID
 }
 
 /// Where a dragged node will land among its siblings.

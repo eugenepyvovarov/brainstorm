@@ -57,8 +57,19 @@ brainstorm inspect launch.bs --flat --pretty
 brainstorm add launch.bs --parent root --title "Research"
 brainstorm validate launch.bs
 
-# Export with the same renderer as the macOS app.
+# Export images/documents with the same renderer as the macOS app.
 brainstorm export launch.bs --format pdf --output launch.pdf
+
+# Export the complete tree as text, including descendants of collapsed nodes.
+brainstorm export launch.bs --format markdown --output launch.md
+brainstorm export launch.bs --format mermaid --output launch.mmd
+brainstorm export launch.bs --format plantuml --output launch.puml
+
+# Stream any text or binary export to stdout (no JSON envelope).
+brainstorm export launch.bs --format markdown --output -
+
+# Move an existing node under a different parent (optionally at a specific index).
+brainstorm move launch.bs --node <uuid> --parent <uuid-or-root> --index 0
 ```
 
 Use `brainstorm help` before unfamiliar operations. Available commands include `themes`, `create`, `inspect`, `add`, `update`, `style`, `move`, `delete`, `export`, `validate`, and `apply`.
@@ -70,3 +81,10 @@ Use `brainstorm help` before unfamiliar operations. Available commands include `
 - Use `--dry-run` on mutating commands when checking an operation first.
 - Prefer `apply` for a single atomic batch of related updates.
 - Keep the JSON response from each mutating command: it records the affected node IDs.
+- The app and CLI share the same parent-changing operation. In the app, drag a node directly onto another node and confirm the new parent; the CLI performs the validated move immediately and rejects root/cycle moves.
+- The macOS app writes its recovery autosave immediately after each completed document action, including undo and redo. Live title typing and drag previews remain coalesced so the app does not write once per keystroke or pointer frame.
+- Text export preserves node order, titles, and the full hierarchy, but not canvas styling, media,
+  expanded state, or manual positions. Markdown repeats the root as both the `#` heading and the
+  top-level list item.
+- Pass `--output -` for any export format to receive only the raw exported bytes on stdout. Do not
+  expect the normal JSON response in stdout mode; redirect binary PNG/PDF output to a file or pipe.

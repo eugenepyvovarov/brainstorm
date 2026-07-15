@@ -6,20 +6,45 @@ import UniformTypeIdentifiers
 public enum BrainstormExportFormat: String, CaseIterable, Sendable {
     case png
     case pdf
+    case markdown
+    case mermaid
+    case plantuml
 
     public var contentType: UTType {
         switch self {
         case .png: .png
         case .pdf: .pdf
+        case .markdown, .mermaid, .plantuml:
+            UTType(filenameExtension: fileExtension, conformingTo: .plainText) ?? .plainText
         }
     }
 
-    public var fileExtension: String { rawValue }
+    public var fileExtension: String {
+        switch self {
+        case .png, .pdf: rawValue
+        case .markdown: "md"
+        case .mermaid: "mmd"
+        case .plantuml: "puml"
+        }
+    }
 
     public var menuTitle: String {
         switch self {
         case .png: "PNG Image…"
         case .pdf: "PDF Document…"
+        case .markdown: "Markdown Outline…"
+        case .mermaid: "Mermaid Mindmap…"
+        case .plantuml: "PlantUML Mindmap…"
+        }
+    }
+
+    public var displayName: String {
+        switch self {
+        case .png: "PNG"
+        case .pdf: "PDF"
+        case .markdown: "Markdown"
+        case .mermaid: "Mermaid"
+        case .plantuml: "PlantUML"
         }
     }
 }
@@ -58,6 +83,13 @@ public enum BrainstormExporter {
         colorScheme: ColorScheme,
         format: BrainstormExportFormat
     ) throws -> Data {
+        switch format {
+        case .markdown, .mermaid, .plantuml:
+            return Data(BrainstormTextExporter.string(root: root, format: format).utf8)
+        case .png, .pdf:
+            break
+        }
+
         let layout = LayoutEngine().layout(root: root)
         guard layout.contentSize.width > 0, layout.contentSize.height > 0 else {
             throw BrainstormExportError.invalidCanvasSize
@@ -74,6 +106,8 @@ public enum BrainstormExporter {
             return try pngData(surface: surface, canvasSize: layout.contentSize)
         case .pdf:
             return try pdfData(surface: surface, canvasSize: layout.contentSize)
+        case .markdown, .mermaid, .plantuml:
+            preconditionFailure("Text exports return before canvas layout")
         }
     }
 
@@ -155,6 +189,125 @@ public enum BrainstormExporter {
         context.endPDFPage()
         context.closePDF()
         return data as Data
+    }
+}
+
+/// Deterministic, complete-tree text exports shared by the app and CLI.
+public enum BrainstormTextExporter {
+    public static func string(root: BrainstormNode, format: BrainstormExportFormat) -> String {
+        switch format {
+        case .markdown:
+            markdown(root: root)
+        case .mermaid:
+            mermaid(root: root)
+        case .plantuml:
+            plantUML(root: root)
+        case .png, .pdf:
+            preconditionFailure("Raster formats are rendered by BrainstormExporter")
+        }
+    }
+
+    private static func markdown(root: BrainstormNode) -> String {
+        let heading = markdownInline(root.title, multilineSeparator: "<br>")
+        var lines = ["# \(heading)", ""]
+        appendMarkdownNode(root, depth: 0, to: &lines)
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func appendMarkdownNode(
+        _ node: BrainstormNode,
+        depth: Int,
+        to lines: inout [String]
+    ) {
+        let title = markdownInline(node.title, multilineSeparator: "<br>")
+        lines.append(String(repeating: "    ", count: depth) + "- " + title)
+        for child in node.children {
+            appendMarkdownNode(child, depth: depth + 1, to: &lines)
+        }
+    }
+
+    private static func markdownInline(_ value: String, multilineSeparator: String) -> String {
+        let parts = normalizedLines(value).map { line in
+            line
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "`", with: "\\`")
+                .replacingOccurrences(of: "*", with: "\\*")
+                .replacingOccurrences(of: "_", with: "\\_")
+                .replacingOccurrences(of: "[", with: "\\[")
+                .replacingOccurrences(of: "]", with: "\\]")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+        }
+        return parts.joined(separator: multilineSeparator)
+    }
+
+    private static func mermaid(root: BrainstormNode) -> String {
+        var lines = ["mindmap"]
+        var nextID = 0
+        appendMermaidNode(root, depth: 1, nextID: &nextID, to: &lines)
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func appendMermaidNode(
+        _ node: BrainstormNode,
+        depth: Int,
+        nextID: inout Int,
+        to lines: inout [String]
+    ) {
+        let id = nextID
+        nextID += 1
+        lines.append(
+            String(repeating: "  ", count: depth) + "n\(id)[\"\(mermaidLabel(node.title))\"]"
+        )
+        for child in node.children {
+            appendMermaidNode(child, depth: depth + 1, nextID: &nextID, to: &lines)
+        }
+    }
+
+    private static func mermaidLabel(_ value: String) -> String {
+        normalizedLines(value)
+            .map {
+                $0.replacingOccurrences(of: "&", with: "&amp;")
+                    .replacingOccurrences(of: "\"", with: "&quot;")
+                    .replacingOccurrences(of: "<", with: "&lt;")
+                    .replacingOccurrences(of: ">", with: "&gt;")
+            }
+            .joined(separator: "<br/>")
+    }
+
+    private static func plantUML(root: BrainstormNode) -> String {
+        var lines = ["@startmindmap"]
+        appendPlantUMLNode(root, depth: 1, to: &lines)
+        lines.append("@endmindmap")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func appendPlantUMLNode(
+        _ node: BrainstormNode,
+        depth: Int,
+        to lines: inout [String]
+    ) {
+        lines.append(String(repeating: "*", count: depth) + " " + plantUMLLabel(node.title))
+        for child in node.children {
+            appendPlantUMLNode(child, depth: depth + 1, to: &lines)
+        }
+    }
+
+    private static func plantUMLLabel(_ value: String) -> String {
+        normalizedLines(value)
+            .map {
+                $0.replacingOccurrences(of: "~", with: "~~")
+                    .replacingOccurrences(of: "<", with: "~<")
+                    .replacingOccurrences(of: ">", with: "~>")
+            }
+            .joined(separator: "\\n")
+    }
+
+    private static func normalizedLines(_ value: String) -> [String] {
+        value.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
     }
 }
 
