@@ -1004,6 +1004,98 @@ struct BrainstormStoreTests {
         #expect(store.node(id: b)?.title == "Second")
     }
 
+    @Test func commandArrowsStillMoveNodesOutsideTitleEditing() {
+        let store = BrainstormStore(startEditing: false)
+        let first = store.addChild()!
+        let second = store.addSibling()!
+        store.commitEditing()
+        store.select(second)
+
+        let key = BrainstormKeyRouter.Key(
+            keyCode: 126,
+            characters: "",
+            isTab: false,
+            isReturn: false,
+            isEscape: false,
+            isUp: true,
+            isDown: false,
+            isLeft: false,
+            isRight: false,
+            isDelete: false
+        )
+        let modifiers = BrainstormKeyRouter.Modifiers(
+            command: true,
+            option: false,
+            shift: false,
+            control: false
+        )
+
+        #expect(BrainstormKeyRouter.handle(
+            store: store,
+            key: key,
+            modifiers: modifiers,
+            inTextField: false,
+            fileActions: nil
+        ))
+        #expect(store.root.children.map(\.id) == [second, first])
+        #expect(store.selectedID == second)
+    }
+
+    @Test func modifierHorizontalArrowsReachTitleEditorButVerticalAreDisabled() {
+        let store = BrainstormStore(startEditing: false)
+        let nodeID = store.addChild()!
+        store.rename(id: nodeID, to: "Two words")
+        store.beginEditing(id: nodeID, selectAll: false)
+
+        let horizontal = BrainstormKeyRouter.Key(
+            keyCode: 123,
+            characters: "",
+            isTab: false,
+            isReturn: false,
+            isEscape: false,
+            isUp: false,
+            isDown: false,
+            isLeft: true,
+            isRight: false,
+            isDelete: false
+        )
+        let vertical = BrainstormKeyRouter.Key(
+            keyCode: 126,
+            characters: "",
+            isTab: false,
+            isReturn: false,
+            isEscape: false,
+            isUp: true,
+            isDown: false,
+            isLeft: false,
+            isRight: false,
+            isDelete: false
+        )
+        let modifiers = BrainstormKeyRouter.Modifiers(
+            command: false,
+            option: false,
+            shift: false,
+            control: true
+        )
+
+        #expect(!BrainstormKeyRouter.handle(
+            store: store,
+            key: horizontal,
+            modifiers: modifiers,
+            inTextField: true,
+            fileActions: nil
+        ))
+        #expect(BrainstormKeyRouter.handle(
+            store: store,
+            key: vertical,
+            modifiers: modifiers,
+            inTextField: true,
+            fileActions: nil
+        ))
+        #expect(store.isEditing)
+        #expect(store.selectedID == nodeID)
+    }
+
     @Test func tabWhileEditingCreatesChildReadyToType() {
         let store = BrainstormStore(startEditing: false)
         let parent = store.addChild()!

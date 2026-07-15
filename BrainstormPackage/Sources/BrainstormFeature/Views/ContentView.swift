@@ -1146,7 +1146,8 @@ private struct SessionWindowRestorer: View {
 enum BrainstormNodeShortcuts {
     static let helpText = """
     Move between nodes: ↑↓ siblings · ← parent · → child
-    Edit: Space to extend · type a letter to replace · ⌘↩ rename/done · Esc cancels
+    Edit: Space to extend · type a letter to replace · ⌃←→ move by words · ⌃↑↓ disabled · ⌘↩ rename/done · Esc cancels
+    Structure: ⌘↑↓ reorder · ⌘←→ change depth (outside title editing)
     Create: Tab child · Return sibling · ? for full list
     Documents: ⌘T new tab · ⌘N new window · ⌘W close
     """
@@ -1351,7 +1352,7 @@ private struct KeyboardHelpSheet: View {
                         shortcutRow("←", "Parent (one level left, toward the main idea)")
                         shortcutRow("→", "First child (one level right; unfolds if needed)")
                         shortcutRow("⌘R", "Jump to the main / center node")
-                        Text("While editing: ←→ move the caret in the title; ↑↓ leave edit and move selection.")
+                        Text("While editing: ←→ move the caret in the title; ↑↓ leave edit and move selection. Modifier arrows do not change the tree while the title editor is active.")
                             .foregroundStyle(.secondary)
                             .font(.callout)
                     }
@@ -1377,8 +1378,11 @@ private struct KeyboardHelpSheet: View {
                         shortcutRow("Inspector", "Map theme, fill, shape, font, branch, emoji, image")
                         shortcutRow("⇧-click", "Add/remove nodes from selection; inspector styles all selected nodes")
                         shortcutRow("drag", "Reorder among siblings (gap line) or free-position")
-                        shortcutRow("⌘-drop", "Drop onto another node to reparent")
-                        shortcutRow("⌘↑ / ⌘↓", "Reorder selected among siblings")
+                        shortcutRow("drop onto node", "Confirm to reparent the dragged node")
+                        shortcutRow("⌘↑↓", "Reorder selected among siblings (outside title editing)")
+                        shortcutRow("⌘←→", "Indent or outdent (outside title editing)")
+                        shortcutRow("⌃←→", "Move by words while editing a title")
+                        shortcutRow("⌃↑↓", "Disabled while editing (never changes the tree)")
                         shortcutRow("⌥↑↓←→", "Nudge free position by 10pt · ⌥R resets")
                         shortcutRow("1:1 / ⌘0", "Reset zoom to 100%")
                         shortcutRow("⌘+ / ⌘-", "Zoom in / out (or ⌘-scroll)")
@@ -1527,6 +1531,16 @@ enum BrainstormKeyRouter {
 
         // ——— While editing a title ———
         if editing {
+            // Modifier arrows are never structural shortcuts. Let horizontal
+            // modifiers reach the native title field (word/caret navigation),
+            // but consume vertical modifiers so they cannot move selection or
+            // invoke a system action while editing.
+            if (cmd || ctrl) && (key.isUp || key.isDown) {
+                return true
+            }
+            if (cmd || ctrl) && (key.isLeft || key.isRight) {
+                return false
+            }
             // ⇧Return inserts a manual line break. When the AppKit title field owns
             // focus, let it insert at the caret; the store path covers lost focus.
             if key.isReturn && shift && !cmd && !opt && !ctrl {
@@ -1566,13 +1580,6 @@ enum BrainstormKeyRouter {
             if (key.isLeft || key.isRight) && !cmd && !opt && !ctrl {
                 return false
             }
-            // ⌘↑↓ reorder, ⌘←→ indent/outdent — work even mid-edit.
-            if cmd && !opt && !ctrl {
-                if key.isUp { store.moveSelectedUp(); return true }
-                if key.isDown { store.moveSelectedDown(); return true }
-                if key.isRight { store.indentSelected(); return true }
-                if key.isLeft { store.outdentSelected(); return true }
-            }
             if opt && !cmd && !ctrl && (chars == "." || keyCodeIsPeriod(key)) {
                 store.toggleFoldSelected()
                 return true
@@ -1604,10 +1611,15 @@ enum BrainstormKeyRouter {
 
         // ——— Not editing: full canvas map ———
         if cmd {
-            if key.isUp { store.moveSelectedUp(); return true }
-            if key.isDown { store.moveSelectedDown(); return true }
-            if key.isRight { store.indentSelected(); return true }
-            if key.isLeft { store.outdentSelected(); return true }
+            // Structural modifier arrows remain available outside the title
+            // editor. While editing, the guarded path above keeps them out of
+            // the tree and lets horizontal caret movement stay native.
+            if !opt && !ctrl {
+                if key.isUp { store.moveSelectedUp(); return true }
+                if key.isDown { store.moveSelectedDown(); return true }
+                if key.isRight { store.indentSelected(); return true }
+                if key.isLeft { store.outdentSelected(); return true }
+            }
             // ⌘↩ — rename mode (select all, ready to replace).
             if key.isReturn { store.beginEditing(selectAll: true); return true }
             // Zoom: ⌘= / ⌘+ / ⌘- / ⌘0

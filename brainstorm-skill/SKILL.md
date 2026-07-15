@@ -83,6 +83,7 @@ Use `brainstorm help` before unfamiliar operations. Available commands include `
 - Keep the JSON response from each mutating command: it records the affected node IDs.
 - The app and CLI share the same parent-changing operation. In the app, drag a node directly onto another node and confirm the new parent; the CLI performs the validated move immediately and rejects root/cycle moves.
 - The macOS app writes its recovery autosave immediately after each completed document action, including undo and redo. Live title typing and drag previews remain coalesced so the app does not write once per keystroke or pointer frame.
+- In the macOS app, plain arrows navigate the tree and ⌘+Arrow still reorders or changes depth outside title editing. While editing a title, modifier arrows do not change the tree; Ctrl+Left/Right remains native word/caret navigation and Ctrl+Up/Down is ignored.
 - Text export preserves node order, titles, and the full hierarchy, but not canvas styling, media,
   expanded state, or manual positions. Markdown repeats the root as both the `#` heading and the
   top-level list item.

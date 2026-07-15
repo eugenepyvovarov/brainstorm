@@ -27,6 +27,7 @@ npx skills add eugenepyvovarov/brainstorm
 
 - Build and explore ideas visually with folding, focus mode, zoom, and a horizontal tree layout.
 - Work at keyboard speed: Tab creates a child, Return creates a sibling, and shortcuts cover editing, rearranging, saving, and undo.
+- Plain arrow keys navigate the tree. Outside title editing, ⌘+Arrow still reorders or changes node depth; while editing, modifier arrows do not change the tree. Press Space to edit a selected title, use Ctrl+Left/Right for word movement, and Ctrl+Up/Down is disabled while editing.
 - Reorganize safely by dragging a node onto another node and confirming the new parent; drag between siblings to reorder or drag aside to change only the visual position.
 - Keep working safely with an autosave recovery snapshot after every completed edit, including add, delete, move, reorder, style, rename, undo, and redo actions.
 - Style one or many nodes with themes, colors, borders, shapes, typography, emoji, and embedded images.
