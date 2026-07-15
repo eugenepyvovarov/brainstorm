@@ -160,6 +160,28 @@ struct DocumentWindowTabbingTests {
 @Suite("BrainstormStore")
 @MainActor
 struct BrainstormStoreTests {
+    @Test func uiPreferencesPersistAcrossInstances() {
+        let suiteName = "BrainstormTests.uiPreferences.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let preferences = BrainstormUIPreferences(defaults: defaults)
+        #expect(preferences.showInspector)
+        #expect(!preferences.isFocusMode)
+
+        preferences.showInspector = false
+        preferences.isFocusMode = true
+
+        let restored = BrainstormUIPreferences(defaults: defaults)
+        #expect(!restored.showInspector)
+        #expect(restored.isFocusMode)
+
+        let store = BrainstormStore(startEditing: false, uiPreferences: restored)
+        #expect(store.isFocusMode)
+        store.toggleFocusMode()
+        #expect(!restored.isFocusMode)
+    }
+
     @Test func newDocumentSelectsRootAndStartsEditing() {
         // BrainstormNode: new document opens with main node in edit mode.
         let store = BrainstormStore(startEditing: true)
@@ -732,7 +754,11 @@ struct BrainstormStoreTests {
     }
 
     @Test func searchSelectsMatchesAndFocusModeTracksBranch() {
-        let store = BrainstormStore(startEditing: false)
+        let suiteName = "BrainstormTests.focusMode.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let preferences = BrainstormUIPreferences(defaults: defaults)
+        let store = BrainstormStore(startEditing: false, uiPreferences: preferences)
         store.rename(id: store.root.id, to: "Trip")
         let a = store.addChild()!
         store.rename(id: a, to: "Flights")
@@ -1114,6 +1140,86 @@ struct BrainstormStoreTests {
         store.deselect()
         store.navigateDown()
         #expect(store.selectedID == store.root.id)
+    }
+}
+
+@Suite("BrainstormCodec", .serialized)
+struct BrainstormCodecTests {
+    @Test func sparseEncodingOmitsDefaultsAndRoundTripsStyledNodes() throws {
+        let rootID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let childID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        let child = BrainstormNode(
+            id: childID,
+            title: "Child",
+            isExpanded: false,
+            style: NodeStyle(shape: .capsule, fontSize: 18, isBold: true),
+            media: NodeMedia(emoji: "🌿"),
+            offsetX: 12,
+            offsetY: -4
+        )
+        let file = BrainstormFile(
+            root: BrainstormNode(id: rootID, title: "Root", children: [child]),
+            themeID: "vscode-dark"
+        )
+
+        let data = try BrainstormCodec.encode(file)
+        let text = String(decoding: data, as: UTF8.self)
+
+        #expect(!text.contains("\"isExpanded\" : true"))
+        #expect(!text.contains("\"media\" : {\n\n"))
+        #expect(!text.contains("\"shape\" : \"roundedRect\""))
+        #expect(!text.contains("\"isBold\" : false"))
+        #expect(text.contains("\"shape\" : \"capsule\""))
+        #expect(text.contains("\"emoji\" : \"🌿\""))
+        #expect(text.contains("\"offsetX\" : 12"))
+        #expect(text.contains("\"offsetY\" : -4"))
+
+        let decoded = try BrainstormCodec.decode(from: data)
+        #expect(decoded == file)
+    }
+
+    @Test func explicitThemeAndEmptyNodesUseMinimalJSON() throws {
+        let file = BrainstormFile(
+            root: BrainstormNode(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
+                title: "Only title"
+            )
+        )
+
+        let text = String(decoding: try BrainstormCodec.encode(file), as: UTF8.self)
+        #expect(text.contains("\"themeID\" : \"system\""))
+        #expect(!text.contains("\"children\""))
+        #expect(!text.contains("\"style\""))
+        #expect(!text.contains("\"media\""))
+        #expect(!text.contains("\"isExpanded\""))
+    }
+
+    @Test func legacyVerboseJSONStillDecodesWithDefaults() throws {
+        let legacy = """
+        {
+          "version": 2,
+          "themeID": "system",
+          "root": {
+            "id": "00000000-0000-0000-0000-000000000004",
+            "title": "Legacy",
+            "isExpanded": true,
+            "children": [],
+            "style": {
+              "shape": "roundedRect",
+              "isBold": false,
+              "isItalic": false
+            },
+            "media": {}
+          }
+        }
+        """
+
+        let decoded = try BrainstormCodec.decode(from: Data(legacy.utf8))
+        #expect(decoded.root.title == "Legacy")
+        #expect(decoded.root.isExpanded)
+        #expect(decoded.root.children.isEmpty)
+        #expect(decoded.root.style.isDefault)
+        #expect(decoded.root.media.isEmpty)
     }
 }
 

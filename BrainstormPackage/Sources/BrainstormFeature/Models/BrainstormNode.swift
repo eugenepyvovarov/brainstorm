@@ -19,6 +19,18 @@ public struct NodeStyle: Codable, Equatable, Hashable, Sendable {
     public var isBold: Bool
     public var isItalic: Bool
 
+    private enum CodingKeys: String, CodingKey {
+        case fillHex
+        case textHex
+        case branchHex
+        case borderHex
+        case borderWidth
+        case shape
+        case fontSize
+        case isBold
+        case isItalic
+    }
+
     public init(
         fillHex: String? = nil,
         textHex: String? = nil,
@@ -67,6 +79,27 @@ public struct NodeStyle: Codable, Equatable, Hashable, Sendable {
         isBold = try c.decodeIfPresent(Bool.self, forKey: .isBold) ?? false
         isItalic = try c.decodeIfPresent(Bool.self, forKey: .isItalic) ?? false
     }
+
+    /// Encode only values that differ from the default node style. This keeps
+    /// ordinary nodes readable while older files remain fully decodable.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(fillHex, forKey: .fillHex)
+        try c.encodeIfPresent(textHex, forKey: .textHex)
+        try c.encodeIfPresent(branchHex, forKey: .branchHex)
+        try c.encodeIfPresent(borderHex, forKey: .borderHex)
+        try c.encodeIfPresent(borderWidth, forKey: .borderWidth)
+        if shape != .roundedRect {
+            try c.encode(shape, forKey: .shape)
+        }
+        try c.encodeIfPresent(fontSize, forKey: .fontSize)
+        if isBold {
+            try c.encode(true, forKey: .isBold)
+        }
+        if isItalic {
+            try c.encode(true, forKey: .isItalic)
+        }
+    }
 }
 
 public enum NodeShape: String, Codable, CaseIterable, Sendable, Identifiable {
@@ -97,6 +130,12 @@ public struct NodeMedia: Codable, Equatable, Hashable, Sendable {
     public var sticker: String?
     /// PNG image bytes, base64-encoded for JSON.
     public var imageBase64: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case emoji
+        case sticker
+        case imageBase64
+    }
 
     public init(emoji: String? = nil, sticker: String? = nil, imageBase64: String? = nil) {
         self.emoji = emoji
@@ -162,6 +201,21 @@ public struct NodeMedia: Codable, Equatable, Hashable, Sendable {
     }
 
     public static let empty = NodeMedia()
+
+    /// Empty decorations are omitted when a node is encoded. Non-empty values
+    /// retain the existing object shape for compatibility with v2 files.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        if let emoji, !emoji.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            try c.encode(emoji, forKey: .emoji)
+        }
+        if let sticker, !sticker.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            try c.encode(sticker, forKey: .sticker)
+        }
+        if let imageBase64, !imageBase64.isEmpty {
+            try c.encode(imageBase64, forKey: .imageBase64)
+        }
+    }
 }
 
 // MARK: - Node
@@ -177,6 +231,17 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
     /// Manual offset from automatic layout position (document points). `nil` = auto.
     public var offsetX: Double?
     public var offsetY: Double?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case isExpanded
+        case children
+        case style
+        case media
+        case offsetX
+        case offsetY
+    }
 
     public init(
         id: UUID = UUID(),
@@ -228,6 +293,29 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         offsetX = try c.decodeIfPresent(Double.self, forKey: .offsetX)
         offsetY = try c.decodeIfPresent(Double.self, forKey: .offsetY)
     }
+
+    /// Encode a sparse, human-readable node. Defaults are supplied by the
+    /// decoder, so omitting them keeps the format compact without a version
+    /// bump or a migration step.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        if !isExpanded {
+            try c.encode(false, forKey: .isExpanded)
+        }
+        if !style.isDefault {
+            try c.encode(style, forKey: .style)
+        }
+        if !media.isEmpty {
+            try c.encode(media, forKey: .media)
+        }
+        try c.encodeIfPresent(offsetX, forKey: .offsetX)
+        try c.encodeIfPresent(offsetY, forKey: .offsetY)
+        if !children.isEmpty {
+            try c.encode(children, forKey: .children)
+        }
+    }
 }
 
 /// On-disk document envelope.
@@ -236,6 +324,12 @@ public struct BrainstormFile: Codable, Equatable, Sendable {
     public var root: BrainstormNode
     /// Editor theme id (`AppTheme.id`). Optional for older files.
     public var themeID: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case themeID
+        case root
+    }
 
     public init(
         version: Int = Self.currentVersion,
@@ -247,7 +341,8 @@ public struct BrainstormFile: Codable, Equatable, Sendable {
         self.themeID = themeID
     }
 
-    /// v2 adds style/media/offsets; themeID is optional on the envelope.
+    /// v2 adds style/media/offsets; themeID is optional on the envelope. The
+    /// current encoder writes these fields sparsely when they are meaningful.
     public static let currentVersion = 2
 
     public init(from decoder: Decoder) throws {
@@ -255,6 +350,14 @@ public struct BrainstormFile: Codable, Equatable, Sendable {
         version = try c.decode(Int.self, forKey: .version)
         root = try c.decode(BrainstormNode.self, forKey: .root)
         themeID = try c.decodeIfPresent(String.self, forKey: .themeID)
+    }
+
+    /// Keep the envelope ordered while preserving the explicit document theme.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(version, forKey: .version)
+        try c.encodeIfPresent(themeID, forKey: .themeID)
+        try c.encode(root, forKey: .root)
     }
 }
 

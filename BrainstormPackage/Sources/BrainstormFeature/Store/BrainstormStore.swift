@@ -48,10 +48,19 @@ public final class BrainstormStore {
     /// Bumped whenever the undo stack changes so SwiftUI can refresh Undo/Redo controls.
     public private(set) var historyEpoch: UInt64 = 0
 
-    // MARK: - View chrome (not persisted)
+    // MARK: - View chrome
+
+    /// Shared app-wide workspace preferences. These are not part of the `.bs`
+    /// document and are restored independently for every document window.
+    @ObservationIgnored private let uiPreferences: BrainstormUIPreferences
 
     /// Focus mode dims everything outside the selected branch.
-    public var isFocusMode: Bool = false
+    public var isFocusMode: Bool {
+        didSet {
+            guard oldValue != isFocusMode, uiPreferences.isFocusMode != isFocusMode else { return }
+            uiPreferences.isFocusMode = isFocusMode
+        }
+    }
     /// Canvas zoom scale (1 = 100%).
     public var zoomScale: CGFloat = 1
     /// Search query; empty hides search highlights.
@@ -71,7 +80,8 @@ public final class BrainstormStore {
         contentRevision: Int = 0,
         savedRevision: Int = 0,
         undoManager: UndoManager = UndoManager(),
-        startEditing: Bool = true
+        startEditing: Bool = true,
+        uiPreferences: BrainstormUIPreferences = .shared
     ) {
         self.documentID = documentID
         self.root = root
@@ -81,6 +91,8 @@ public final class BrainstormStore {
         self.contentRevision = contentRevision
         self.savedRevision = savedRevision
         self.undoManager = undoManager
+        self.uiPreferences = uiPreferences
+        self.isFocusMode = uiPreferences.isFocusMode
         // Explicit groups — more reliable when undos are registered from a key monitor.
         self.undoManager.groupsByEvent = false
         self.undoManager.levelsOfUndo = 50
@@ -351,7 +363,7 @@ public final class BrainstormStore {
         editingSeed = nil
         fileURL = nil
         lastError = nil
-        isFocusMode = false
+        isFocusMode = uiPreferences.isFocusMode
         zoomScale = 1
         // Prefer the app-wide default (last selected theme); fall back to current.
         themeID = AppTheme.preferredDefaultID
@@ -399,7 +411,7 @@ public final class BrainstormStore {
             editingSeed = nil
             fileURL = url
             lastError = nil
-            isFocusMode = false
+            isFocusMode = uiPreferences.isFocusMode
             zoomScale = 1
             clearSearch()
             structureEpoch &+= 1

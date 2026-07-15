@@ -9,7 +9,7 @@ public struct ContentView: View {
     @FocusState private var focusedNodeID: UUID?
     @FocusState private var canvasFocused: Bool
     @State private var showKeyboardHelp = false
-    @State private var showInspector = true
+    @State private var uiPreferences = BrainstormUIPreferences.shared
     @State private var searchFieldFocused = false
     @FocusState private var searchFocused: Bool
     @State private var autosaveTask: Task<Void, Never>?
@@ -44,6 +44,13 @@ public struct ContentView: View {
                 // Clicking/⌘F into search must not keep a node title field live.
                 if focused, store.isEditing {
                     store.commitEditing()
+                }
+            }
+            .onChange(of: uiPreferences.isFocusMode) { _, isFocusMode in
+                // Keep already-open document stores in sync when the shared
+                // preference changes from another tab/window or a shortcut.
+                if store.isFocusMode != isFocusMode {
+                    store.isFocusMode = isFocusMode
                 }
             }
             .task(id: store.fileURL) {
@@ -178,14 +185,14 @@ public struct ContentView: View {
             .help("Zoom in (⌘+)")
             .focusable(false)
 
-            Button("Focus", systemImage: store.isFocusMode ? "circle.lefthalf.filled" : "circle") {
+            Button("Focus", systemImage: uiPreferences.isFocusMode ? "circle.lefthalf.filled" : "circle") {
                 store.toggleFocusMode()
             }
             .help("Focus mode (⇧⌘F)")
             .focusable(false)
 
             Button("Inspector", systemImage: "sidebar.trailing") {
-                showInspector.toggle()
+                uiPreferences.showInspector.toggle()
             }
             .help("Toggle style inspector")
             .focusable(false)
@@ -317,12 +324,12 @@ public struct ContentView: View {
                     handleKeyPress(keyPress)
                 }
 
-            if showInspector {
+            if uiPreferences.showInspector {
                 NodeInspectorView(store: store)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: showInspector)
+        .animation(.easeInOut(duration: 0.2), value: uiPreferences.showInspector)
         .animation(.easeInOut(duration: 0.25), value: store.themeID)
         // Nodes resolve fill/text/branch from this environment value.
         .environment(\.brainstormTheme, store.theme)

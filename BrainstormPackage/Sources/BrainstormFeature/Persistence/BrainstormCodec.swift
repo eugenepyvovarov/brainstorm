@@ -42,6 +42,9 @@ public enum BrainstormCodec {
 
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
+        // Keep key order deterministic for clean diffs. The custom model
+        // encoders below make the content sparse; sorted keys only affect
+        // presentation, not the document semantics.
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return encoder
     }()
@@ -63,7 +66,8 @@ public enum BrainstormCodec {
         } catch {
             throw BrainstormCodecError.decodingFailed(error.localizedDescription)
         }
-        // v1 = title tree only; v2 adds style/media/offsets (decoded with defaults).
+        // v1 = title tree only; v2 adds style/media/offsets (decoded with
+        // defaults, so both verbose and sparse v2 files are accepted).
         guard (1...BrainstormFile.currentVersion).contains(file.version) else {
             throw BrainstormCodecError.unsupportedVersion(file.version)
         }

@@ -25,7 +25,7 @@ npx skills add eugenepyvovarov/brainstorm
 
 ## Highlights
 
-- Build and explore ideas visually with folding, focus mode, zoom, and a horizontal tree layout.
+- Build and explore ideas visually with folding, focus mode, zoom, and a horizontal tree layout. Inspector visibility and focus mode are remembered across launches and files.
 - Work at keyboard speed: Tab creates a child, Return creates a sibling, and shortcuts cover editing, rearranging, saving, and undo.
 - Plain arrow keys navigate the tree. Outside title editing, ⌘+Arrow still reorders or changes node depth; while editing, modifier arrows do not change the tree. Press Space to edit a selected title, use Ctrl+Left/Right for word movement, and Ctrl+Up/Down is disabled while editing.
 - Reorganize safely by dragging a node onto another node and confirming the new parent; drag between siblings to reorder or drag aside to change only the visual position.
@@ -38,6 +38,12 @@ npx skills add eugenepyvovarov/brainstorm
 ## Autosave and recovery
 
 The macOS app writes a recovery snapshot immediately after each completed document action, including adding, deleting, moving, reordering, styling, renaming, undo, and redo. While a title is being typed or a node is being dragged, updates are coalesced briefly so Brainstorm does not write once per keystroke or pointer frame. The normal Save command still writes the `.bs` file to its chosen location.
+
+Inspector visibility and focus mode are app-wide workspace preferences. Brainstorm restores them when it launches and keeps the same choices when you open or switch between `.bs` files; they never modify the map contents or make a document dirty.
+
+## `.bs` file format
+
+`.bs` files are human-readable JSON. New saves use sparse encoding: empty child lists, empty media, default styles, and default expanded state are omitted, while custom styling, media, manual positions, stable UUIDs, and document themes remain explicit. Existing verbose v1/v2 files remain compatible and become compact the next time Brainstorm or the CLI saves them.
 
 ## In action
 

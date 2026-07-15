@@ -77,12 +77,14 @@ Use `brainstorm help` before unfamiliar operations. Available commands include `
 ## Safe automation
 
 - Use only `.bs` documents; Brainstorm does not support `.mindmap` files.
+- `.bs` files are human-readable sparse JSON. New saves omit empty/default fields, while existing verbose v1/v2 files remain readable and are compacted on the next save; stable node UUIDs and explicit style/media/position values are preserved.
 - Start with `inspect` or `validate` before changing an existing file.
 - Use `--dry-run` on mutating commands when checking an operation first.
 - Prefer `apply` for a single atomic batch of related updates.
 - Keep the JSON response from each mutating command: it records the affected node IDs.
 - The app and CLI share the same parent-changing operation. In the app, drag a node directly onto another node and confirm the new parent; the CLI performs the validated move immediately and rejects root/cycle moves.
 - The macOS app writes its recovery autosave immediately after each completed document action, including undo and redo. Live title typing and drag previews remain coalesced so the app does not write once per keystroke or pointer frame.
+- The macOS app remembers inspector visibility and focus mode as app-wide workspace preferences across launches and `.bs` files. These settings are UI state, not document content, so changing them never dirties a map.
 - In the macOS app, plain arrows navigate the tree and ⌘+Arrow still reorders or changes depth outside title editing. While editing a title, modifier arrows do not change the tree; Ctrl+Left/Right remains native word/caret navigation and Ctrl+Up/Down is ignored.
 - Text export preserves node order, titles, and the full hierarchy, but not canvas styling, media,
   expanded state, or manual positions. Markdown repeats the root as both the `#` heading and the

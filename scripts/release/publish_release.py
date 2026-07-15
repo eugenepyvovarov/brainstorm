@@ -3,6 +3,8 @@
 
 import json
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -11,8 +13,66 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
+RELEASE_TAG_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+ROOT_DIR = Path(__file__).resolve().parents[2]
+
+
 def die(message: str) -> None:
     raise SystemExit(message)
+
+
+def git_output(*arguments: str) -> str:
+    completed = subprocess.run(
+        ("git", "-C", str(ROOT_DIR), *arguments),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return completed.stdout
+
+
+def release_version(tag: str) -> tuple[int, int, int] | None:
+    match = RELEASE_TAG_PATTERN.fullmatch(tag)
+    if match is None:
+        return None
+    return tuple(int(component) for component in match.groups())
+
+
+def previous_release_tag(current_tag: str, source_commit: str) -> str | None:
+    current_version = release_version(current_tag)
+    if current_version is None:
+        die(f"Release tag is not semantic Brainstorm version: {current_tag}")
+
+    candidates = []
+    for tag in git_output("tag", "--merged", source_commit).splitlines():
+        version = release_version(tag)
+        if version is not None and version < current_version:
+            candidates.append((version, tag))
+    return max(candidates, default=(None, None))[1]
+
+
+def release_body(version: str, build: str, tag: str, source_commit: str) -> str:
+    previous_tag = previous_release_tag(tag, source_commit)
+    revision_range = f"{previous_tag}..{source_commit}" if previous_tag else source_commit
+    commits = [
+        line.split("\t", maxsplit=1)
+        for line in git_output("log", "--reverse", "--format=%h%x09%s", revision_range).splitlines()
+        if line
+    ]
+    heading = f"## Changes since {previous_tag}" if previous_tag else "## Changes"
+    changes = [f"- {subject} (`{short_sha}`)" for short_sha, subject in commits]
+    if not changes:
+        changes = ["- No source commits since the previous release."]
+    return "\n".join(
+        [
+            heading,
+            *changes,
+            "",
+            "## Release integrity",
+            f"Developer ID-signed and notarized Brainstorm {version} (build {build}).",
+        ]
+    )
 
 
 def request(url: str, token: str, method: str = "GET", payload: dict[str, Any] | None = None, expected: tuple[int, ...] = (200,)) -> tuple[Any, int, dict[str, str]]:
@@ -113,7 +173,7 @@ def main() -> None:
     if any(not path.is_file() for path in files):
         die("Release disk image is missing.")
 
-    body = f"Developer ID-signed and notarized Brainstorm {data['version']} (build {data['build']})."
+    body = release_body(data["version"], data["build"], data["tag"], data["source_commit"])
     gitea_base = os.environ["BRAINSTORM_GITEA_SERVER_URL"].rstrip("/") + "/api/v1"
     gitea_repository = os.environ["BRAINSTORM_GITEA_REPOSITORY"]
     github_repository = os.environ["BRAINSTORM_GITHUB_REPOSITORY"]

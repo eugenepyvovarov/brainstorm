@@ -2,7 +2,7 @@
 
 Brainstorm releases use one artifact built on the `macos-ultramac` Gitea runner. The workflow resolves its version as `major.minor.<gitea.run_number>`, signs the app with the Developer ID identity available on Ultramac, archives `Brainstorm.app`, and records its SHA-256 in a manifest.
 
-`scripts/release/publish-release.sh` tags the exact source commit and publishes one notarized DMG to Gitea and GitHub Releases. The DMG contains `Brainstorm.app` and its separately signed universal `brainstorm` CLI at `Contents/Helpers/brainstorm`; release-only checksum, signature, Gatekeeper, and manifest files remain internal to CI. Gitea remains the primary repository; GitHub is its push mirror.
+`scripts/release/publish-release.sh` tags the exact source commit and publishes one notarized DMG to Gitea and GitHub Releases. The publisher computes the shared release body from the ordered commit subjects between the release commit and the latest earlier reachable semantic tag, so both services list the same changes. The DMG contains `Brainstorm.app` and its separately signed universal `brainstorm` CLI at `Contents/Helpers/brainstorm`; release-only checksum, signature, Gatekeeper, and manifest files remain internal to CI. Gitea remains the primary repository; GitHub is its push mirror.
 
 Homebrew is a separate manual workflow. It downloads the public GitHub release DMG, verifies it against GitHub's published SHA-256 asset digest, and commits `Casks/brainstorm.rb` to `eugenepyvovarov/homebrew-cask`. The cask installs `Brainstorm.app` and links its packaged `brainstorm` binary into Homebrew's `bin` directory.
 
