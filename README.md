@@ -33,6 +33,7 @@ npx skills add eugenepyvovarov/brainstorm
 - Style one or many nodes with themes, colors, borders, shapes, typography, emoji, and embedded images.
 - Use the app and `brainstorm` CLI on the same portable JSON `.bs` files; the app handles safe external-file changes.
 - Export the complete map to high-resolution PNG, single-page PDF, Markdown nested lists, Mermaid, or PlantUML.
+- Choose export formats from a concise alphabetical menu without trailing punctuation.
 
 ## Autosave and recovery
 

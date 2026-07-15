@@ -1884,6 +1884,16 @@ struct BrainstormTextExporterTests {
         #expect(BrainstormExportFormat.mermaid.fileExtension == "mmd")
         #expect(BrainstormExportFormat.plantuml.fileExtension == "puml")
     }
+
+    @Test func exportMenuUsesPlainAlphabeticalTitles() {
+        #expect(BrainstormExportFormat.menuCases.map(\.menuTitle) == [
+            "Markdown Outline",
+            "Mermaid Mindmap",
+            "PDF Document",
+            "PlantUML Mindmap",
+            "PNG Image",
+        ])
+    }
 }
 
 @Suite("ExternalFileChangePolicy")

@@ -30,12 +30,16 @@ public enum BrainstormExportFormat: String, CaseIterable, Sendable {
 
     public var menuTitle: String {
         switch self {
-        case .png: "PNG Image…"
-        case .pdf: "PDF Document…"
-        case .markdown: "Markdown Outline…"
-        case .mermaid: "Mermaid Mindmap…"
-        case .plantuml: "PlantUML Mindmap…"
+        case .png: "PNG Image"
+        case .pdf: "PDF Document"
+        case .markdown: "Markdown Outline"
+        case .mermaid: "Mermaid Mindmap"
+        case .plantuml: "PlantUML Mindmap"
         }
+    }
+
+    public static var menuCases: [Self] {
+        allCases.sorted { $0.menuTitle.lowercased() < $1.menuTitle.lowercased() }
     }
 
     public var displayName: String {

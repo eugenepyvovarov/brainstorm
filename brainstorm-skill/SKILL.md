@@ -89,3 +89,4 @@ Use `brainstorm help` before unfamiliar operations. Available commands include `
   top-level list item.
 - Pass `--output -` for any export format to receive only the raw exported bytes on stdout. Do not
   expect the normal JSON response in stdout mode; redirect binary PNG/PDF output to a file or pipe.
+- The app lists export choices alphabetically with plain labels; CLI format names remain lowercase.

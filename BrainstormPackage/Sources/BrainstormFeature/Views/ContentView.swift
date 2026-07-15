@@ -227,7 +227,7 @@ public struct ContentView: View {
             .focusable(false)
 
             Menu {
-                ForEach(BrainstormExportFormat.allCases, id: \.self) { format in
+                ForEach(BrainstormExportFormat.menuCases, id: \.self) { format in
                     Button(format.menuTitle) {
                         exportDocument(as: format)
                     }

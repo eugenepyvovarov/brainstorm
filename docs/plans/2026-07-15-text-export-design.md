@@ -31,3 +31,5 @@ and redirected PNG/PDF data valid.
 Unit tests cover the exact output, collapsed descendants, ordering, multiline titles, and reserved
 characters. CLI help, the README, agent skill, in-app help, and the public project page document the
 new formats.
+
+The app presents export choices alphabetically with concise labels and no trailing ellipses.
