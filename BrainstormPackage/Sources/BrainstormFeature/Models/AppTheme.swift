@@ -314,7 +314,8 @@ public struct AppTheme: Identifiable, Codable, Equatable, Hashable, Sendable {
         searchHighlight: "#FFF3A3"
     )
 
-    public static let all: [AppTheme] = [
+    /// Themes that ship with Brainstorm and cannot be removed.
+    public static let builtIn: [AppTheme] = [
         .system,
         .vsCodeDark,
         .vsCodeLight,
@@ -327,6 +328,11 @@ public struct AppTheme: Identifiable, Codable, Equatable, Hashable, Sendable {
         .solarizedDark,
         .zedLight,
     ]
+
+    /// Built-in palettes plus imported native Zed theme files.
+    public static var all: [AppTheme] {
+        builtIn + ThemeLibrary.shared.themes
+    }
 
     public static func theme(id: String) -> AppTheme {
         all.first { $0.id == id } ?? .system

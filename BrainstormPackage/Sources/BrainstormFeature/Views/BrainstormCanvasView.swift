@@ -23,6 +23,8 @@ struct BrainstormCanvasView: View {
     /// In-flight free-position drag (document points). Store is NOT mutated until end.
     @State private var freeDrag: FreeDragSession?
     @State private var magnificationBaseZoom: CGFloat?
+    /// Reference storage avoids invalidating the whole canvas on every pointer move.
+    @State private var zoomInteraction = CanvasZoomInteraction()
     /// Captured on mouse-down because SwiftUI can deliver the tap after Shift is released.
     @State private var lastClickModifiers: NSEvent.ModifierFlags = []
     /// Reference-type cache so pan/zoom do not re-measure the full tree.
@@ -61,11 +63,21 @@ struct BrainstormCanvasView: View {
             }
             .clipped()
             .coordinateSpace(name: "brainstormCanvas")
+            .onContinuousHover(coordinateSpace: .named("brainstormCanvas")) { phase in
+                if case let .active(location) = phase {
+                    zoomInteraction.lastPointerLocation = location
+                }
+            }
             .background(CanvasBackgroundFill(theme: store.theme))
             .background(
                 ScrollWheelMonitor(
-                    onScroll: { deltaX, deltaY, isZoom in
-                        handleScroll(deltaX: deltaX, deltaY: deltaY, isZoom: isZoom)
+                    onScroll: { deltaX, deltaY, location, isZoom in
+                        handleScroll(
+                            deltaX: deltaX,
+                            deltaY: deltaY,
+                            location: location,
+                            isZoom: isZoom
+                        )
                     },
                     onMouseDown: { modifiers in
                         lastClickModifiers = modifiers
@@ -81,6 +93,19 @@ struct BrainstormCanvasView: View {
                 }
             }
             .onChange(of: geo.size) { _, newSize in viewportSize = newSize }
+            .onChange(of: zoom) { oldZoom, newZoom in
+                let anchor = zoomInteraction.pendingAnchor
+                    ?? zoomInteraction.lastPointerLocation
+                    ?? CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
+                panOffset = CanvasZoomTransform.panOffset(
+                    preservingDocumentPointAt: anchor,
+                    from: oldZoom,
+                    to: newZoom,
+                    currentPan: panOffset
+                )
+                panDragOrigin = panOffset
+                zoomInteraction.pendingAnchor = nil
+            }
             .onChange(of: focusTarget) { _, newID in
                 guard freeDrag == nil, !suppressAutoCenter, !isPanning else { return }
                 ensureVisible(newID, in: layout, viewport: geo.size, zoom: zoom, animated: true)
@@ -496,10 +521,21 @@ struct BrainstormCanvasView: View {
 
     // MARK: - Scroll / zoom / pan
 
-    private func handleScroll(deltaX: CGFloat, deltaY: CGFloat, isZoom: Bool) {
+    private func handleScroll(
+        deltaX: CGFloat,
+        deltaY: CGFloat,
+        location: CGPoint,
+        isZoom: Bool
+    ) {
         guard store.editingID == nil, freeDrag == nil else { return }
         if isZoom {
-            store.setZoom(store.zoomScale * (1 + deltaY * 0.01))
+            let oldZoom = store.zoomScale
+            zoomInteraction.lastPointerLocation = location
+            zoomInteraction.pendingAnchor = location
+            store.setZoom(oldZoom * (1 + deltaY * 0.01))
+            if store.zoomScale == oldZoom {
+                zoomInteraction.pendingAnchor = nil
+            }
         } else {
             panOffset.width += deltaX
             panOffset.height += deltaY
@@ -511,7 +547,7 @@ struct BrainstormCanvasView: View {
     }
 
     private var magnificationGesture: some Gesture {
-        MagnificationGesture()
+        MagnifyGesture()
             .onChanged { value in
                 guard freeDrag == nil else { return }
                 // Capture start scale once per gesture; multiply (not compound on mutated zoom).
@@ -519,10 +555,17 @@ struct BrainstormCanvasView: View {
                     magnificationBaseZoom = store.zoomScale
                 }
                 let base = magnificationBaseZoom ?? store.zoomScale
-                store.setZoom(base * value)
+                let oldZoom = store.zoomScale
+                zoomInteraction.lastPointerLocation = value.startLocation
+                zoomInteraction.pendingAnchor = value.startLocation
+                store.setZoom(base * value.magnification)
+                if store.zoomScale == oldZoom {
+                    zoomInteraction.pendingAnchor = nil
+                }
             }
             .onEnded { _ in
                 magnificationBaseZoom = nil
+                zoomInteraction.pendingAnchor = nil
             }
     }
 
@@ -623,6 +666,33 @@ private struct PendingReparent {
     let parentID: UUID
 }
 
+/// Canvas transform math kept separate from the view so its pointer-anchor
+/// invariant can be tested without driving AppKit scroll events.
+enum CanvasZoomTransform {
+    static func panOffset(
+        preservingDocumentPointAt canvasPoint: CGPoint,
+        from oldZoom: CGFloat,
+        to newZoom: CGFloat,
+        currentPan: CGSize
+    ) -> CGSize {
+        let safeOldZoom = max(oldZoom, 0.01)
+        let documentPoint = CGPoint(
+            x: (canvasPoint.x - currentPan.width) / safeOldZoom,
+            y: (canvasPoint.y - currentPan.height) / safeOldZoom
+        )
+        return CGSize(
+            width: canvasPoint.x - documentPoint.x * newZoom,
+            height: canvasPoint.y - documentPoint.y * newZoom
+        )
+    }
+}
+
+@MainActor
+private final class CanvasZoomInteraction {
+    var lastPointerLocation: CGPoint?
+    var pendingAnchor: CGPoint?
+}
+
 /// Where a dragged node will land among its siblings.
 private struct SiblingReorderTarget: Equatable {
     let nodeID: UUID
@@ -692,7 +762,7 @@ struct CanvasBackgroundFill: View {
 /// Local monitor: only consumes scroll when the pointer is over *this* view.
 /// Lets the inspector / other chrome scroll with the mouse wheel.
 private struct ScrollWheelMonitor: NSViewRepresentable {
-    var onScroll: (CGFloat, CGFloat, Bool) -> Void
+    var onScroll: (CGFloat, CGFloat, CGPoint, Bool) -> Void
     var onMouseDown: (NSEvent.ModifierFlags) -> Void
 
     func makeNSView(context: Context) -> CanvasScrollHost {
@@ -709,11 +779,13 @@ private struct ScrollWheelMonitor: NSViewRepresentable {
 }
 
 private final class CanvasScrollHost: NSView {
-    var onScroll: ((CGFloat, CGFloat, Bool) -> Void)?
+    var onScroll: ((CGFloat, CGFloat, CGPoint, Bool) -> Void)?
     var onMouseDown: ((NSEvent.ModifierFlags) -> Void)?
     nonisolated(unsafe) private var monitor: Any?
 
     override var acceptsFirstResponder: Bool { false }
+    /// Match the SwiftUI canvas coordinate system explicitly.
+    override var isFlipped: Bool { true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -744,10 +816,11 @@ private final class CanvasScrollHost: NSView {
             let dy = event.scrollingDeltaY
             guard dx != 0 || dy != 0 else { return event }
             let zoom = event.modifierFlags.contains(.command)
+            let canvasLocation = locInView
             if Thread.isMainThread {
-                self.onScroll?(dx, dy, zoom)
+                self.onScroll?(dx, dy, canvasLocation, zoom)
             } else {
-                DispatchQueue.main.async { self.onScroll?(dx, dy, zoom) }
+                DispatchQueue.main.async { self.onScroll?(dx, dy, canvasLocation, zoom) }
             }
             return nil
         }

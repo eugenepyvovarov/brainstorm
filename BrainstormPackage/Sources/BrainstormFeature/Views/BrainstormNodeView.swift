@@ -176,9 +176,6 @@ struct BrainstormNodeView: View {
             .onTapGesture { onSelect() }
             .accessibilityLabel(displayTitle)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
-            .help(isRoot
-                  ? "Drag to free-position"
-                  : "Drag onto a node to change its parent · drag among siblings to reorder · drag aside to free-position")
     }
 
     private var cardInterior: some View {
@@ -322,7 +319,6 @@ struct BrainstormNodeView: View {
         }
         .buttonStyle(.plain)
         .brainstormGlassCapsule(interactive: true, tint: collapsed ? accent : nil)
-        .help(collapsed ? "Unfold branch (⌥.)" : "Fold branch (⌥.)")
     }
 
     private var nodeWell: some View {
@@ -336,7 +332,6 @@ struct BrainstormNodeView: View {
                 .shadow(color: accent.opacity(0.4), radius: 4, y: 1)
         }
         .buttonStyle(.plain)
-        .help("Add child idea (Tab)")
     }
 
     @ViewBuilder

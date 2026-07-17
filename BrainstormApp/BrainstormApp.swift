@@ -10,11 +10,29 @@ struct BrainstormApp: App {
     @State private var recentDocuments = RecentDocuments.shared
 
     var body: some Scene {
+        Window("Welcome to Brainstorm", id: BrainstormWindowID.welcome) {
+            BrainstormWelcomeView()
+                .frame(minWidth: 620, minHeight: 480)
+        }
+        .defaultSize(width: 720, height: 560)
+
+        Window("Theme Manager", id: BrainstormWindowID.themeManager) {
+            ThemeManagerView()
+                .frame(
+                    minWidth: 1_020,
+                    maxWidth: .infinity,
+                    minHeight: 620,
+                    maxHeight: .infinity,
+                    alignment: .topLeading
+                )
+        }
+        .defaultSize(width: 1_280, height: 780)
+
         WindowGroup(id: BrainstormWindowID.map, for: UUID.self) { $documentID in
-            ContentView(documentID: documentID)
-                .frame(minWidth: 720, minHeight: 480)
-        } defaultValue: {
-            DocumentSession.shared.launchDocumentID()
+            if let documentID {
+                ContentView(documentID: documentID)
+                    .frame(minWidth: 720, minHeight: 480)
+            }
         }
         .defaultSize(width: 1000, height: 700)
         .commands {
@@ -63,7 +81,8 @@ final class BrainstormAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
-        // WindowGroup creates the first map; suppress AppKit’s extra untitled.
+        // The dedicated welcome window is launched by SwiftUI. Map windows are
+        // typed and opened explicitly only after the user chooses a map.
         false
     }
 }

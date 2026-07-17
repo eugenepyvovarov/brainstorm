@@ -48,6 +48,75 @@ final class BrainstormUITests: XCTestCase {
     }
 
     @MainActor
+    func testNewTabTargetsOnlyTheKeyWindowWhenTwoMapGroupsAreOpen() throws {
+        launchApp()
+        XCTAssertEqual(app.windows.count, 1)
+
+        app.typeKey("t", modifierFlags: .command)
+        XCTAssertTrue(waitUntil {
+            self.app.tabGroups.firstMatch.exists
+                && self.app.tabGroups.firstMatch.tabs.count == 2
+        })
+
+        app.typeKey("n", modifierFlags: .command)
+        XCTAssertTrue(waitUntil { self.app.windows.count == 2 })
+
+        app.typeKey("t", modifierFlags: .command)
+
+        XCTAssertTrue(
+            waitUntil {
+                guard self.app.windows.count == 2, self.app.tabGroups.count == 2 else {
+                    return false
+                }
+                let tabCounts = (0 ..< self.app.tabGroups.count)
+                    .map { self.app.tabGroups.element(boundBy: $0).tabs.count }
+                    .sorted()
+                return tabCounts == [2, 2]
+            },
+            "One ⌘T should add one tab only to the key map window.\n\(app.debugDescription)"
+        )
+        XCTAssertEqual(app.windows.count, 2)
+    }
+
+    @MainActor
+    func testNewTabFromThemeManagerTargetsOnlyTheLastActiveMap() throws {
+        launchApp()
+        app.typeKey("n", modifierFlags: .command)
+        XCTAssertTrue(waitUntil { self.app.windows.count == 2 })
+
+        let themeMenu = app.toolbars.menuButtons.element(boundBy: 0)
+        XCTAssertTrue(themeMenu.waitForExistence(timeout: 2), app.debugDescription)
+        themeMenu.click()
+        let manageThemes = app.menuItems["Manage Themes…"]
+        XCTAssertTrue(manageThemes.waitForExistence(timeout: 2), app.debugDescription)
+        manageThemes.click()
+
+        XCTAssertTrue(app.windows["Theme Manager"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.windows.count, 3)
+
+        app.typeKey("t", modifierFlags: .command)
+
+        XCTAssertTrue(
+            waitUntil {
+                guard self.app.windows.count == 3, self.app.tabGroups.count == 1 else {
+                    return false
+                }
+                return self.app.tabGroups.firstMatch.tabs.count == 2
+            },
+            "⌘T from Theme Manager should add one tab to the last active map only.\n\(app.debugDescription)"
+        )
+    }
+
+    @MainActor
+    func testFreshLaunchShowsWelcomeScreen() throws {
+        app.launch()
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["welcomeNewMap"].exists)
+        XCTAssertTrue(app.buttons["welcomeOpenMap"].exists)
+        XCTAssertTrue(app.staticTexts["welcomeRecentMaps"].exists)
+    }
+
+    @MainActor
     func testClosedTabDoesNotReturnAfterRelaunch() throws {
         launchApp()
         app.typeKey("t", modifierFlags: .command)
@@ -101,7 +170,7 @@ final class BrainstormUITests: XCTestCase {
     }
 
     @MainActor
-    func testSelectedTabIsNotStolenByBackgroundAutosave() throws {
+    func testRelaunchReturnsToWelcomeScreenInsteadOfRestoringTabs() throws {
         launchApp()
         app.typeKey("t", modifierFlags: .command)
         app.typeKey("t", modifierFlags: .command)
@@ -115,10 +184,8 @@ final class BrainstormUITests: XCTestCase {
         app.terminate()
         app.launch()
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 5))
-
-        let restoredTabBar = app.tabGroups.firstMatch
-        XCTAssertTrue(waitUntil { restoredTabBar.exists && restoredTabBar.tabs.count == 3 })
-        XCTAssertTrue(isSelected(restoredTabBar.tabs.element(boundBy: 0)))
+        XCTAssertTrue(app.buttons["welcomeNewMap"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.tabGroups.firstMatch.exists)
     }
 
     @MainActor
@@ -170,6 +237,10 @@ final class BrainstormUITests: XCTestCase {
     private func launchApp() {
         app.launch()
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 5))
+        let newMap = app.buttons["welcomeNewMap"]
+        XCTAssertTrue(newMap.waitForExistence(timeout: 5), app.debugDescription)
+        newMap.click()
+        XCTAssertTrue(waitUntil { self.app.buttons["welcomeNewMap"].exists == false })
     }
 
     private func waitUntil(

@@ -2,6 +2,25 @@ import AppKit
 import Foundation
 import Observation
 
+/// A saved top-level map window frame in macOS screen coordinates.
+public struct RecentDocumentWindowFrame: Codable, Hashable, Sendable {
+    public var originX: Double
+    public var originY: Double
+    public var width: Double
+    public var height: Double
+
+    public init(_ frame: CGRect) {
+        originX = frame.origin.x
+        originY = frame.origin.y
+        width = frame.width
+        height = frame.height
+    }
+
+    public var rect: CGRect {
+        CGRect(x: originX, y: originY, width: width, height: height)
+    }
+}
+
 /// One entry in File → Open Recent.
 public struct RecentDocumentEntry: Codable, Identifiable, Hashable, Sendable {
     public var id: String
@@ -9,19 +28,23 @@ public struct RecentDocumentEntry: Codable, Identifiable, Hashable, Sendable {
     public var pathHint: String
     public var bookmark: Data?
     public var lastOpenedAt: Date
+    /// Last standalone window geometry for this saved map, if it has been closed before.
+    public var windowFrame: RecentDocumentWindowFrame?
 
     public init(
         id: String,
         displayName: String,
         pathHint: String,
         bookmark: Data? = nil,
-        lastOpenedAt: Date = Date()
+        lastOpenedAt: Date = Date(),
+        windowFrame: RecentDocumentWindowFrame? = nil
     ) {
         self.id = id
         self.displayName = displayName
         self.pathHint = pathHint
         self.bookmark = bookmark
         self.lastOpenedAt = lastOpenedAt
+        self.windowFrame = windowFrame
     }
 
     /// Short title for the menu (filename without extension).
@@ -83,12 +106,14 @@ public final class RecentDocuments {
             includingResourceValuesForKeys: nil,
             relativeTo: nil
         )
+        let previous = items.first { $0.id == path || $0.pathHint == path }
         let entry = RecentDocumentEntry(
             id: path,
             displayName: name,
             pathHint: path,
             bookmark: bookmark,
-            lastOpenedAt: Date()
+            lastOpenedAt: Date(),
+            windowFrame: previous?.windowFrame
         )
         items.removeAll { $0.id == entry.id || $0.pathHint == path }
         items.insert(entry, at: 0)
@@ -98,6 +123,55 @@ public final class RecentDocuments {
         persist()
         // Also feed the system recent-documents list (Dock / some menu integrations).
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
+    }
+
+    /// Remember a saved map's final top-level window frame before it is closed.
+    public func noteWindowFrame(_ frame: CGRect, for url: URL) {
+        let path = url.path
+        guard let index = items.firstIndex(where: { $0.id == path || $0.pathHint == path }) else { return }
+        items[index].windowFrame = RecentDocumentWindowFrame(frame)
+        persist()
+    }
+
+    /// A previously saved frame, made safe for the current monitor layout.
+    public func restoredWindowFrame(for url: URL) -> CGRect? {
+        let path = url.path
+        guard let frame = items.first(where: { $0.id == path || $0.pathHint == path })?.windowFrame else {
+            return nil
+        }
+        return Self.fittedWindowFrame(
+            frame.rect,
+            visibleFrames: NSScreen.screens.map(\.visibleFrame),
+            fallbackVisibleFrame: NSScreen.main?.visibleFrame
+        )
+    }
+
+    /// Keep a saved frame visible after monitors are disconnected or rearranged.
+    static func fittedWindowFrame(
+        _ frame: CGRect,
+        visibleFrames: [CGRect],
+        fallbackVisibleFrame: CGRect? = nil
+    ) -> CGRect? {
+        guard frame.width > 0, frame.height > 0 else { return nil }
+        let available = visibleFrames.filter { $0.width > 0 && $0.height > 0 }
+        guard let fallback = fallbackVisibleFrame ?? available.first else { return nil }
+        let target = available.max { lhs, rhs in
+            lhs.intersection(frame).width * lhs.intersection(frame).height
+                < rhs.intersection(frame).width * rhs.intersection(frame).height
+        }.flatMap { candidate in
+            candidate.intersects(frame) ? candidate : nil
+        } ?? fallback
+
+        let size = CGSize(
+            width: min(frame.width, target.width),
+            height: min(frame.height, target.height)
+        )
+        return CGRect(
+            x: min(max(frame.minX, target.minX), target.maxX - size.width),
+            y: min(max(frame.minY, target.minY), target.maxY - size.height),
+            width: size.width,
+            height: size.height
+        )
     }
 
     public func clear() {

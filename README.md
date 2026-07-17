@@ -25,12 +25,15 @@ npx skills add eugenepyvovarov/brainstorm
 
 ## Highlights
 
-- Build and explore ideas visually with folding, focus mode, zoom, and a horizontal tree layout. Inspector visibility and focus mode are remembered across launches and files.
+- Build and explore ideas visually with folding, focus mode, zoom, and a horizontal tree layout. Mouse-wheel, trackpad, toolbar, and keyboard zoom stay anchored beneath the pointer, while inspector visibility and focus mode are remembered across launches and files.
 - Work at keyboard speed: Tab creates a child, Return creates a sibling, and shortcuts cover editing, rearranging, saving, and undo.
 - Plain arrow keys navigate the tree. Outside title editing, ⌘+Arrow still reorders or changes node depth; while editing, modifier arrows do not change the tree. Press Space to edit a selected title, use Ctrl+Left/Right for word movement, and Ctrl+Up/Down is disabled while editing.
 - Reorganize safely by dragging a node onto another node and confirming the new parent; drag between siblings to reorder or drag aside to change only the visual position.
 - Keep working safely with an autosave recovery snapshot after every completed edit, including add, delete, move, reorder, style, rename, undo, and redo actions.
+- On every normal launch, choose **New Mind Map**, **Open…**, or one of your five most recent `.bs` files. Opening a `.bs` file from Finder or the Dock goes straight to that map.
+- When you reopen a saved map from Recent, Brainstorm restores the window's last size and location, adjusting it to remain visible after monitor changes.
 - Style one or many nodes with themes, colors, borders, shapes, typography, emoji, and embedded images.
+- Use the toolbar’s **Theme** menu → **Manage Themes…** to browse a compact native Zed Theme Registry inside Brainstorm. The catalog is cached on disk for fast launches and offline fallback; selected extension archives are cached by version. Select an extension, then use Up/Down to move through the results and preview each original Zed palette as a real one-root, two-child Brainstorm map. Import keeps its `themes/*.json` source unchanged, including native Zed JSON5 comments and trailing commas. You can also import a local Zed theme file, set a default for new maps, or remove one imported variant at a time; removing the final variant deletes the unchanged source, and reimporting restores every variant. Theme additions, removals, and default changes appear immediately in open map windows.
 - Use the app and `brainstorm` CLI on the same portable JSON `.bs` files; the app handles safe external-file changes.
 - Export the complete map to high-resolution PNG, single-page PDF, Markdown nested lists, Mermaid, or PlantUML.
 - Choose export formats from a concise alphabetical menu without trailing punctuation.

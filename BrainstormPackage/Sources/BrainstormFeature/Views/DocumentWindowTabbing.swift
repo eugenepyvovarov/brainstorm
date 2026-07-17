@@ -137,10 +137,31 @@ public enum DocumentWindowTabbing {
     /// Native tab groups can report stale key-window state for hidden members.
     /// Commands must target only the selected tab; standalone windows use AppKit key state.
     public static func isCommandTarget(_ window: NSWindow) -> Bool {
-        if let tabGroup = window.tabGroup {
-            return tabGroup.selectedWindow === window
+        isCommandTarget(
+            window,
+            keyWindow: NSApp.keyWindow,
+            fallbackDocumentID: DocumentSession.shared.state.activeDocumentID
+        )
+    }
+
+    /// Injectable identities keep command routing deterministic in tests.
+    ///
+    /// A key map window always wins. If an auxiliary window (Theme Manager or
+    /// Welcome) is key, route the command to the last active map only.
+    static func isCommandTarget(
+        _ window: NSWindow,
+        keyWindow: NSWindow?,
+        fallbackDocumentID: UUID?
+    ) -> Bool {
+        if let tabGroup = window.tabGroup,
+           tabGroup.selectedWindow !== window
+        {
+            return false
         }
-        return window.isKeyWindow
+        if keyWindow === window { return true }
+        if let keyWindow, documentID(for: keyWindow) != nil { return false }
+        guard let fallbackDocumentID else { return false }
+        return documentID(for: window) == fallbackDocumentID
     }
 
     /// Bring an already-open document forward rather than opening its URL twice.
@@ -195,6 +216,18 @@ public enum DocumentWindowTabbing {
         window.tabbingIdentifier = identifier
         window.tabbingMode = .preferred
 
+        // AppKit may size the newly-created SwiftUI window from the
+        // WindowGroup default while it is being merged. Capture the current
+        // host frame so the tab operation cannot resize the user's window.
+        let preservedFrame = parent.frame
+        let hasPreservedFrame = preservedFrame.width > 0 && preservedFrame.height > 0
+
+        func restorePreservedFrame() {
+            guard hasPreservedFrame else { return }
+            parent.setFrame(preservedFrame, display: false)
+            window.setFrame(preservedFrame, display: false)
+        }
+
         if let group = parent.tabGroup,
            group.windows.contains(where: { $0 === window })
         {
@@ -213,9 +246,7 @@ public enum DocumentWindowTabbing {
             window.animationBehavior = originalAnimation
         }
 
-        if parent.frame.size.width > 0, parent.frame.size.height > 0 {
-            window.setFrame(parent.frame, display: false)
-        }
+        restorePreservedFrame()
 
         if let group = parent.tabGroup {
             group.addWindow(window)
@@ -223,6 +254,15 @@ public enum DocumentWindowTabbing {
         } else {
             parent.addTabbedWindow(window, ordered: .above)
             parent.tabGroup?.selectedWindow = select ? window : parent
+        }
+
+        // SwiftUI can apply the new scene's default size on the next run-loop
+        // turn. Restore once more after the native tab group is established.
+        DispatchQueue.main.async { [weak parent, weak window] in
+            guard let parent, let window else { return }
+            guard parent.tabGroup?.windows.contains(where: { $0 === window }) == true else { return }
+            parent.setFrame(preservedFrame, display: false)
+            window.setFrame(preservedFrame, display: false)
         }
 
     }

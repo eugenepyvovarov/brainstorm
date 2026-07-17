@@ -267,7 +267,6 @@ struct NodeInspectorView: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help("Click to clear emoji")
                     Spacer(minLength: 0)
                 }
             }
@@ -300,7 +299,6 @@ struct NodeInspectorView: View {
                 )
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: .infinity)
-                .help("Paste an emoji here if you prefer the keyboard")
             }
 
             Divider().opacity(0.4)
@@ -325,7 +323,6 @@ struct NodeInspectorView: View {
                             }
                     }
                     .buttonStyle(.plain)
-                    .help(isSelected ? "Click again to clear" : symbol)
                 }
             }
 

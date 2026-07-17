@@ -23,7 +23,16 @@ struct GlassCardModifier: ViewModifier {
                 )
         } else {
             content
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .background {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                        if let tint {
+                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                                .fill(tint.opacity(0.12))
+                        }
+                    }
+                }
                 .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
@@ -67,6 +76,25 @@ struct GlassCapsuleModifier: ViewModifier {
     }
 }
 
+struct GlassButtonModifier: ViewModifier {
+    var prominent = false
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            if prominent {
+                content.buttonStyle(.glassProminent)
+            } else {
+                content.buttonStyle(.glass)
+            }
+        } else if prominent {
+            content.buttonStyle(.borderedProminent)
+        } else {
+            content.buttonStyle(.bordered)
+        }
+    }
+}
+
 extension View {
     func brainstormGlassCard(
         cornerRadius: CGFloat = BrainstormChrome.nodeCorner,
@@ -78,6 +106,10 @@ extension View {
 
     func brainstormGlassCapsule(interactive: Bool = true, tint: Color? = nil) -> some View {
         modifier(GlassCapsuleModifier(interactive: interactive, tint: tint))
+    }
+
+    func brainstormGlassButton(prominent: Bool = false) -> some View {
+        modifier(GlassButtonModifier(prominent: prominent))
     }
 
     /// Groups glass children when available.
@@ -152,7 +184,6 @@ struct ColorSwatchButton: View {
             }
         }
         .buttonStyle(.plain)
-        .help(name)
         .accessibilityLabel(name)
     }
 }

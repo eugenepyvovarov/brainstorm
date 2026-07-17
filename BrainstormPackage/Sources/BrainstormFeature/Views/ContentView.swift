@@ -39,7 +39,6 @@ public struct ContentView: View {
         rootChrome
             .modifier(contentChrome)
             .toolbar { toolbarContent }
-            .help(BrainstormNodeShortcuts.helpText)
             .onChange(of: searchFocused) { _, focused in
                 // Clicking/⌘F into search must not keep a node title field live.
                 if focused, store.isEditing {
@@ -77,6 +76,11 @@ public struct ContentView: View {
                 store.ensureSelection()
                 syncFocusWithEditingState()
                 scheduleAutosave(immediate: true)
+                // A welcome-screen or Finder open can queue URLs before this
+                // map window has installed its notification observer.
+                if ExternalDocumentRouter.shared.hasPending {
+                    openExternalDocuments()
+                }
             },
             onDisappear: {
                 autosaveTask?.cancel()
@@ -129,7 +133,6 @@ public struct ContentView: View {
                 store.undo()
                 syncFocusWithEditingState()
             }
-            .help("Undo (⌘Z)")
             .disabled(!store.canUndo)
             .focusable(false)
 
@@ -137,7 +140,6 @@ public struct ContentView: View {
                 store.redo()
                 syncFocusWithEditingState()
             }
-            .help("Redo (⌘⇧Z)")
             .disabled(!store.canRedo)
             .focusable(false)
         }
@@ -145,7 +147,6 @@ public struct ContentView: View {
             ThemePickerMenu(themeID: store.themeID) { id in
                 store.applyTheme(id)
             }
-            .help("Editor theme (Zed / VS Code palettes)")
             .focusable(false)
 
             // Search UI temporarily disabled (type-to-edit conflicts); re-enable later.
@@ -153,7 +154,6 @@ public struct ContentView: View {
             Button("Zoom Out", systemImage: "minus.magnifyingglass") {
                 store.zoomOut()
             }
-            .help("Zoom out (⌘-)")
             .focusable(false)
 
             Text("\(Int(store.zoomScale * 100))%")
@@ -173,7 +173,6 @@ public struct ContentView: View {
             // visually splits this ToolbarItemGroup. Keep it inside the shared
             // zoom group while retaining a useful click target.
             .buttonStyle(.plain)
-            .help("Actual size — reset zoom to 100% (⌘0)")
             .accessibilityLabel("Actual Size")
             .accessibilityIdentifier("zoomActualSize")
             .disabled(abs(store.zoomScale - 1) < 0.001)
@@ -182,55 +181,46 @@ public struct ContentView: View {
             Button("Zoom In", systemImage: "plus.magnifyingglass") {
                 store.zoomIn()
             }
-            .help("Zoom in (⌘+)")
             .focusable(false)
 
             Button("Focus", systemImage: uiPreferences.isFocusMode ? "circle.lefthalf.filled" : "circle") {
                 store.toggleFocusMode()
             }
-            .help("Focus mode (⇧⌘F)")
             .focusable(false)
 
             Button("Inspector", systemImage: "sidebar.trailing") {
                 uiPreferences.showInspector.toggle()
             }
-            .help("Toggle style inspector")
             .focusable(false)
 
             Button("Keyboard", systemImage: "keyboard") {
                 showKeyboardHelp = true
             }
-            .help("Keyboard shortcuts (⌘/)")
             .focusable(false)
 
             Button("New Tab", systemImage: "plus.rectangle.on.rectangle") {
                 openNewTab()
             }
-            .help("New mind map tab (⌘T)")
             .focusable(false)
 
             Button("New Window", systemImage: "macwindow.badge.plus") {
                 openNewWindow()
             }
-            .help("New mind map window (⌘N)")
             .focusable(false)
 
             Button("Open", systemImage: "folder") {
                 openDocument()
             }
-            .help("Open… (⌘O)")
             .focusable(false)
 
             Button("Save", systemImage: "square.and.arrow.down") {
                 saveDocument(saveAs: false)
             }
-            .help("Save (⌘S) — also autosaved continuously")
             .focusable(false)
 
             Button("Save As", systemImage: "square.and.arrow.down.on.square") {
                 saveDocument(saveAs: true)
             }
-            .help("Save As…")
             .focusable(false)
 
             Menu {
@@ -242,7 +232,6 @@ public struct ContentView: View {
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
-            .help("Export the complete map as an image, document, or text mind map")
             .focusable(false)
         }
     }
@@ -277,8 +266,11 @@ public struct ContentView: View {
         // The native tab-bar + gives us the exact originating window. Refresh
         // its registration before creating the child so SwiftUI view churn can
         // never leave this request attached to a stale document/window pair.
-        if let parentWindow {
-            DocumentWindowTabbing.configure(parentWindow, documentID: documentID)
+        let resolvedParentWindow = parentWindow ?? NSApp.keyWindow
+        if let resolvedParentWindow,
+           resolvedParentWindow.tabbingIdentifier == DocumentWindowTabbing.identifier
+        {
+            DocumentWindowTabbing.configure(resolvedParentWindow, documentID: documentID)
         }
         let id = DocumentSession.shared.registerNewDocument().id
         openDocumentWindow(id: id, asTabIn: documentID)
@@ -468,6 +460,7 @@ public struct ContentView: View {
     private func loadFile(from url: URL, intoCurrentWindow: Bool, asTab: Bool = false) {
         if intoCurrentWindow {
             store.load(from: url)
+            restoreWindowFrame(for: url)
             refreshMonitoredFileData(from: url)
             scheduleAutosave(immediate: true)
             syncFocusWithEditingState()
@@ -482,6 +475,18 @@ public struct ContentView: View {
         temp.performAutosave()
         let parent = asTab ? documentID : nil
         openDocumentWindow(id: id, asTabIn: parent)
+    }
+
+    /// A map selected from Recent replaces a blank window at its own last
+    /// geometry. Tabs intentionally retain their parent window's geometry.
+    private func restoreWindowFrame(for url: URL) {
+        guard let frame = RecentDocuments.shared.restoredWindowFrame(for: url) else { return }
+        DispatchQueue.main.async {
+            guard let window = DocumentWindowTabbing.window(for: documentID),
+                  window.tabGroup?.windows.count ?? 1 == 1
+            else { return }
+            window.setFrame(frame, display: true)
+        }
     }
 
     /// Returns `true` when the document was saved (or Save As completed).
@@ -630,6 +635,9 @@ public struct ContentView: View {
     private func finalizeDocumentClose(_ window: NSWindow) {
         autosaveTask?.cancel()
         store.performAutosave()
+        if let fileURL = store.fileURL {
+            RecentDocuments.shared.noteWindowFrame(window.frame, for: fileURL)
+        }
         DocumentSession.shared.closeDocument(documentID)
         BrainstormStore.releaseShared(documentID: documentID)
         DocumentWindowTabbing.unregister(documentID: documentID, window: window)
@@ -639,8 +647,208 @@ public struct ContentView: View {
 // MARK: - Window identity
 
 public enum BrainstormWindowID {
+    /// Untyped launch window for creating or reopening a map.
+    public static let welcome = "brainstorm.welcome"
+    /// Dedicated browser for built-in and imported native Zed themes.
+    public static let themeManager = "brainstorm.themeManager"
     /// Typed window group for one mind map document each.
     public static let map = "brainstorm.document"
+}
+
+/// Normal-launch entry point. It stays open until the user creates or opens a
+/// map, rather than restoring an editor window without an explicit choice.
+public struct BrainstormWelcomeView: View {
+    @State private var recents = RecentDocuments.shared
+    @State private var didLaunchMap = false
+    @State private var errorMessage: String?
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
+
+    public init() {}
+
+    public var body: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                header
+                actions
+                recentDocuments
+            }
+            .frame(maxWidth: 580)
+            .padding(32)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .brainstormNew)) { _ in
+            createNewMap()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .brainstormNewTab)) { _ in
+            createNewMap()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .brainstormOpen)) { _ in
+            chooseMapsToOpen()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .brainstormOpenRecent)) { note in
+            if let id = note.object as? String {
+                openRecent(id: id)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .brainstormExternalDocumentsAvailable)) { _ in
+            openPendingDocuments()
+        }
+        .alert("Couldn’t Open Map", isPresented: errorAlertBinding) {
+            Button("OK", role: .cancel) { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private var header: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .font(.system(size: 44, weight: .medium))
+                .foregroundStyle(.tint)
+            Text("Welcome to Brainstorm")
+                .font(.largeTitle.weight(.semibold))
+            Text("Start a new mind map or pick up where you left off.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+        }
+        .multilineTextAlignment(.center)
+        .padding(.bottom, 28)
+    }
+
+    private var actions: some View {
+        HStack(spacing: 12) {
+            Button(action: createNewMap) {
+                Label("New Mind Map", systemImage: "plus")
+                    .frame(maxWidth: .infinity)
+            }
+            .accessibilityIdentifier("welcomeNewMap")
+            .keyboardShortcut("n", modifiers: .command)
+            .buttonStyle(.borderedProminent)
+
+            Button(action: chooseMapsToOpen) {
+                Label("Open…", systemImage: "folder")
+                    .frame(maxWidth: .infinity)
+            }
+            .accessibilityIdentifier("welcomeOpenMap")
+            .keyboardShortcut("o", modifiers: .command)
+            .buttonStyle(.bordered)
+        }
+        .controlSize(.large)
+        .padding(.bottom, 28)
+    }
+
+    private var recentDocuments: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Recent Maps")
+                    .font(.headline)
+                    .accessibilityIdentifier("welcomeRecentMaps")
+                Spacer()
+            }
+
+            if visibleRecents.isEmpty {
+                ContentUnavailableView(
+                    "No Recent Maps",
+                    systemImage: "clock",
+                    description: Text("Maps you open or save will appear here.")
+                )
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 28)
+            } else {
+                VStack(spacing: 4) {
+                    ForEach(visibleRecents) { item in
+                        Button { openRecent(id: item.id) } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "point.3.connected.trianglepath.dotted")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 18)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.menuTitle)
+                                        .lineLimit(1)
+                                    Text(item.pathHint)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 8)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.primary.opacity(0.055))
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private var visibleRecents: [RecentDocumentEntry] {
+        Array(recents.items.prefix(5))
+    }
+
+    private var errorAlertBinding: Binding<Bool> {
+        Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )
+    }
+
+    private func createNewMap() {
+        guard !didLaunchMap else { return }
+        launchMap(DocumentSession.shared.registerNewDocument().id)
+    }
+
+    private func chooseMapsToOpen() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = BrainstormCodec.openContentTypes
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.message = "Choose a Brainstorm map (.bs)"
+        guard panel.runModal() == .OK else { return }
+        ExternalDocumentRouter.shared.receive(urls: panel.urls)
+        openPendingDocuments()
+    }
+
+    private func openRecent(id: String) {
+        guard let entry = recents.entry(id: id) else { return }
+        guard let url = recents.resolveURL(for: entry) else {
+            errorMessage = "Couldn’t open “\(entry.menuTitle)”. The file may have been moved or deleted."
+            recents.remove(id: id)
+            return
+        }
+        ExternalDocumentRouter.shared.receive(urls: [url])
+        openPendingDocuments()
+    }
+
+    private func openPendingDocuments() {
+        // `ExternalDocumentRouter.receive` posts synchronously, and callers
+        // also invoke this after queuing URLs. Only the first path may reserve
+        // the pristine document that will be replaced by the opened file.
+        guard !didLaunchMap, ExternalDocumentRouter.shared.hasPending else { return }
+        launchMap(DocumentSession.shared.registerNewDocument().id)
+    }
+
+    private func launchMap(_ documentID: UUID) {
+        guard !didLaunchMap else { return }
+        didLaunchMap = true
+        DocumentWindowTabbing.openAsWindow(documentID: documentID) {
+            openWindow(id: BrainstormWindowID.map, value: documentID)
+        }
+        DispatchQueue.main.async {
+            dismiss()
+        }
+    }
 }
 
 /// Lifecycle chrome extracted from `ContentView.body` so the type checker stays fast.
@@ -718,7 +926,6 @@ private struct ContentViewChrome: ViewModifier {
 
     @ViewBuilder
     private var sessionAndKeyboardBackground: some View {
-        SessionWindowRestorer(primaryDocumentID: documentID)
         KeyboardMonitor(
             store: store,
             isSearchFocused: { searchFocused.wrappedValue },
@@ -1084,72 +1291,6 @@ private struct ContentViewErrorAlert: ViewModifier {
     }
 }
 
-/// Opens remaining session documents as native tabs on the primary window (once per launch).
-/// Skipped when the app was started by opening a specific file (Finder double-click).
-private struct SessionWindowRestorer: View {
-    let primaryDocumentID: UUID
-    @Environment(\.openWindow) private var openWindow
-    @State private var didRun = false
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .task {
-                guard !didRun else { return }
-                didRun = true
-                guard !DocumentSession.shared.didRestoreExtraWindows else { return }
-
-                // Let `application(_:open:)` deliver Finder URLs before we reopen last session.
-                do {
-                    try await Task.sleep(for: .milliseconds(200))
-                } catch {
-                    return
-                }
-                guard !DocumentSession.shared.didRestoreExtraWindows else { return }
-
-                // Double-click / Dock drop: skip multi-window restore so only the
-                // requested file(s) appear — but never prune recovery autosaves.
-                if DocumentSession.shared.suppressSessionWindowRestore
-                    || ExternalDocumentRouter.shared.hasPending
-                {
-                    DocumentSession.shared.beginDocumentOpenLaunch()
-                    DocumentSession.shared.markExtraWindowsRestored()
-                    if ExternalDocumentRouter.shared.hasPending {
-                        NotificationCenter.default.post(
-                            name: .brainstormExternalDocumentsAvailable,
-                            object: nil
-                        )
-                    }
-                    return
-                }
-
-                DocumentSession.shared.markExtraWindowsRestored()
-                let extras = DocumentSession.shared.additionalDocumentIDsToRestore(
-                    primary: primaryDocumentID
-                )
-                guard !extras.isEmpty else { return }
-
-                // Wait a beat so the primary bridge can register its exact window.
-                do {
-                    try await Task.sleep(for: .milliseconds(50))
-                } catch {
-                    return
-                }
-                for id in extras {
-                    guard !Task.isCancelled else { return }
-                    DocumentWindowTabbing.openAsTab(
-                        documentID: id,
-                        parentDocumentID: primaryDocumentID,
-                        // Keep the previously-active primary tab selected while restoring.
-                        select: false
-                    ) {
-                        openWindow(id: BrainstormWindowID.map, value: id)
-                    }
-                }
-            }
-    }
-}
-
 enum BrainstormNodeShortcuts {
     static let helpText = """
     Move between nodes: ↑↓ siblings · ← parent · → child
@@ -1186,6 +1327,7 @@ public extension Notification.Name {
 struct ThemePickerMenu: View {
     let themeID: String
     var onSelect: (String) -> Void
+    @Environment(\.openWindow) private var openWindow
 
     private var current: AppTheme { AppTheme.theme(id: themeID) }
 
@@ -1209,6 +1351,10 @@ struct ThemePickerMenu: View {
                         }
                     }
                 }
+            }
+            Divider()
+            Button("Manage Themes…") {
+                openWindow(id: BrainstormWindowID.themeManager)
             }
         } label: {
             Label {
@@ -1310,7 +1456,6 @@ private struct KeyboardStatusBar: View {
             Button("All shortcuts", action: onShowHelp)
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("Open full keyboard guide (⌘/)")
         }
         .font(.system(size: 11, weight: .medium))
         .padding(.horizontal, 14)

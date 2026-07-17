@@ -150,10 +150,24 @@ public final class DocumentSession {
         return registerNewDocument().id
     }
 
+    /// The primary document for session recovery, if there is real user work
+    /// to recover. A clean untitled seed is intentionally not a session to
+    /// restore: launch should show the welcome screen instead.
+    public func launchRestorableDocumentID() -> UUID? {
+        let documents = state.openDocuments.filter(isRestorable)
+        if let active = state.activeDocumentID,
+           documents.contains(where: { $0.id == active })
+        {
+            return active
+        }
+        return documents.max(by: { $0.lastEditedAt < $1.lastEditedAt })?.id
+    }
+
     /// Extra window ids to open after the first window appears.
     public func additionalDocumentIDsToRestore(primary: UUID) -> [UUID] {
         guard !suppressSessionWindowRestore else { return [] }
         return state.openDocuments
+            .filter(isRestorable)
             .map(\.id)
             .filter { $0 != primary }
     }
@@ -418,6 +432,15 @@ public final class DocumentSession {
         } else {
             state.openDocuments.append(desc)
         }
+    }
+
+    /// Saved files and genuinely edited untitled maps are worth reopening.
+    /// `registerNewDocument` seeds an empty autosave, but that is a launch
+    /// implementation detail rather than user work that should bypass Welcome.
+    private func isRestorable(_ descriptor: OpenDocumentDescriptor) -> Bool {
+        descriptor.filePathHint != nil
+            || descriptor.isDirty
+            || descriptor.contentRevision != descriptor.savedRevision
     }
 
     private static func canonicalPath(_ url: URL) -> String {

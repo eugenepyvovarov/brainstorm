@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Observation
 import Testing
 @testable import BrainstormFeature
 
@@ -133,7 +134,7 @@ struct DocumentWindowTabbingTests {
         #expect(!appCloseHandlerCalled)
     }
 
-    @Test func onlySelectedNativeTabReceivesSharedCommands() {
+    @Test func onlySelectedKeyNativeTabReceivesSharedCommands() {
         let first = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
             styleMask: [.titled],
@@ -148,12 +149,110 @@ struct DocumentWindowTabbingTests {
         )
         DocumentWindowTabbing.attachAsTab(second, into: first, select: true)
 
-        #expect(!DocumentWindowTabbing.isCommandTarget(first))
-        #expect(DocumentWindowTabbing.isCommandTarget(second))
+        #expect(!DocumentWindowTabbing.isCommandTarget(
+            first,
+            keyWindow: second,
+            fallbackDocumentID: nil
+        ))
+        #expect(DocumentWindowTabbing.isCommandTarget(
+            second,
+            keyWindow: second,
+            fallbackDocumentID: nil
+        ))
 
         first.tabGroup?.selectedWindow = first
-        #expect(DocumentWindowTabbing.isCommandTarget(first))
-        #expect(!DocumentWindowTabbing.isCommandTarget(second))
+        #expect(DocumentWindowTabbing.isCommandTarget(
+            first,
+            keyWindow: first,
+            fallbackDocumentID: nil
+        ))
+        #expect(!DocumentWindowTabbing.isCommandTarget(
+            second,
+            keyWindow: first,
+            fallbackDocumentID: nil
+        ))
+    }
+
+    @Test func onlyOneStandaloneWindowReceivesSharedCommands() {
+        let firstID = UUID()
+        let secondID = UUID()
+        let first = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let second = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        DocumentWindowTabbing.configure(first, documentID: firstID)
+        DocumentWindowTabbing.configure(second, documentID: secondID)
+        defer {
+            DocumentWindowTabbing.unregister(documentID: firstID, window: first)
+            DocumentWindowTabbing.unregister(documentID: secondID, window: second)
+        }
+
+        #expect(DocumentWindowTabbing.isCommandTarget(
+            first,
+            keyWindow: first,
+            fallbackDocumentID: nil
+        ))
+        #expect(!DocumentWindowTabbing.isCommandTarget(
+            second,
+            keyWindow: first,
+            fallbackDocumentID: nil
+        ))
+        #expect(!DocumentWindowTabbing.isCommandTarget(
+            first,
+            keyWindow: second,
+            fallbackDocumentID: nil
+        ))
+        #expect(DocumentWindowTabbing.isCommandTarget(
+            second,
+            keyWindow: second,
+            fallbackDocumentID: nil
+        ))
+
+        let themeManager = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        #expect(!DocumentWindowTabbing.isCommandTarget(
+            first,
+            keyWindow: themeManager,
+            fallbackDocumentID: secondID
+        ))
+        #expect(DocumentWindowTabbing.isCommandTarget(
+            second,
+            keyWindow: themeManager,
+            fallbackDocumentID: secondID
+        ))
+    }
+
+    @Test func attachingTabPreservesHostWindowFrame() {
+        let parent = NSWindow(
+            contentRect: NSRect(x: 180, y: 140, width: 1280, height: 820),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let child = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 480),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let expectedFrame = parent.frame
+
+        DocumentWindowTabbing.attachAsTab(child, into: parent, select: true)
+
+        #expect(parent.frame == expectedFrame)
+        #expect(child.frame == expectedFrame)
     }
 }
 
@@ -866,6 +965,50 @@ struct BrainstormStoreTests {
         store.insertNewlineInTitle()
         #expect(store.editingDraft == "Hi\n")
         #expect(store.root.title == "Hi\n")
+    }
+
+    @Test func scrollZoomKeepsTheDocumentPointUnderTheCursor() {
+        let cursor = CGPoint(x: 360, y: 220)
+        let oldZoom: CGFloat = 1.25
+        let newZoom: CGFloat = 2
+        let oldPan = CGSize(width: -80, height: 35)
+
+        let newPan = CanvasZoomTransform.panOffset(
+            preservingDocumentPointAt: cursor,
+            from: oldZoom,
+            to: newZoom,
+            currentPan: oldPan
+        )
+        let documentPoint = CGPoint(
+            x: (cursor.x - oldPan.width) / oldZoom,
+            y: (cursor.y - oldPan.height) / oldZoom
+        )
+
+        #expect(abs(documentPoint.x * newZoom + newPan.width - cursor.x) < 0.001)
+        #expect(abs(documentPoint.y * newZoom + newPan.height - cursor.y) < 0.001)
+    }
+
+    @Test func repeatedZoomStepsKeepTheSamePointUnderTheCursor() {
+        let cursor = CGPoint(x: 147, y: 381)
+        var zoom: CGFloat = 0.8
+        var pan = CGSize(width: 63, height: -91)
+        let documentPoint = CGPoint(
+            x: (cursor.x - pan.width) / zoom,
+            y: (cursor.y - pan.height) / zoom
+        )
+
+        for nextZoom: CGFloat in [1.1, 1.75, 3, 2.4, 0.25] {
+            pan = CanvasZoomTransform.panOffset(
+                preservingDocumentPointAt: cursor,
+                from: zoom,
+                to: nextZoom,
+                currentPan: pan
+            )
+            zoom = nextZoom
+
+            #expect(abs(documentPoint.x * zoom + pan.width - cursor.x) < 0.001)
+            #expect(abs(documentPoint.y * zoom + pan.height - cursor.y) < 0.001)
+        }
     }
 
     @Test func titlesPreserveNewlinesOnLiveApplyAndCommit() {
@@ -1732,6 +1875,368 @@ struct AppThemeTests {
     }
 }
 
+@Suite("ThemeLibrary")
+struct ThemeLibraryTests {
+    @Test func themeListMutationsInvalidateObservation() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrainstormThemeObservationTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let data = Data("""
+        {
+          "name": "Observed Theme",
+          "themes": [
+            {
+              "name": "Observed Dark",
+              "appearance": "dark",
+              "style": {
+                "editor.background": "#111111",
+                "editor.foreground": "#eeeeee"
+              }
+            }
+          ]
+        }
+        """.utf8)
+        let library = ThemeLibrary(storageDirectory: directory)
+
+        try await confirmation("theme list observation invalidated") { changed in
+            withObservationTracking {
+                _ = library.themes.map(\.id)
+            } onChange: {
+                changed()
+            }
+
+            _ = try library.importNativeZedTheme(data: data, sourceName: "observed")
+        }
+    }
+
+    @Test func importsAndDeletesNativeZedThemeJSONWithoutRewritingIt() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrainstormZedThemeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let data = Data("""
+        {
+          "name": "Example Family",
+          "author": "Theme Author",
+          "themes": [
+            {
+              "name": "Example Dark",
+              "appearance": "dark",
+              "style": {
+                "editor.background": "#112233ff",
+                "editor.foreground": "#E0E1E2ff",
+                "text.accent": "#3366CCff",
+                "element.background": "#223344ff",
+                "element.selected": "#445566ff",
+                "border": "#556677ff",
+                "text.muted": "#99AABBff"
+              }
+            }
+          ]
+        }
+        """.utf8)
+        let library = ThemeLibrary(storageDirectory: directory)
+
+        let imported = try library.importNativeZedTheme(data: data, sourceName: "example")
+        #expect(imported.familyName == "Example Family")
+        #expect(imported.author == "Theme Author")
+        #expect(imported.themes.count == 1)
+        #expect(imported.themes[0].name == "Example Dark")
+        #expect(imported.themes[0].canvasBackground == "#112233")
+        #expect(imported.themes[0].branch == "#3366CC")
+        #expect(try Data(contentsOf: imported.sourceURL) == data)
+        #expect(library.themes.map(\.id) == imported.themes.map(\.id))
+
+        let duplicate = try library.importNativeZedTheme(data: data, sourceName: "same-theme")
+        #expect(duplicate.sourceURL == imported.sourceURL)
+        #expect(library.importedFiles.count == 1)
+
+        try library.delete(imported)
+        #expect(library.importedFiles.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: imported.sourceURL.path))
+    }
+
+    @Test func importsNativeZedJSON5WithoutRewritingIt() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrainstormZedJSON5Tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let data = Data("""
+        {
+          // Zed permits JSON5 comments in native theme files.
+          "name": "Commented Family",
+          "author": "Theme Author",
+          "themes": [
+            {
+              "name": "Commented Light",
+              "appearance": "light",
+              "style": {
+                "editor.background": "#ffffff",
+                "editor.foreground": "#202020",
+                "text.accent": "#0451a5",
+              },
+            },
+          ],
+        }
+        """.utf8)
+        let library = ThemeLibrary(storageDirectory: directory)
+
+        let imported = try library.importNativeZedTheme(data: data, sourceName: "commented")
+
+        #expect(imported.themes.map(\.name) == ["Commented Light"])
+        #expect(imported.themes.first?.canvasBackground == "#FFFFFF")
+        #expect(try Data(contentsOf: imported.sourceURL) == data)
+    }
+
+    @Test func malformedZedJSONUsesDomainError() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrainstormMalformedZedTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = ThemeLibrary(storageDirectory: directory)
+        let file = ZedNativeThemeFile(
+            path: "themes/malformed.json",
+            data: Data("{ definitely not JSON5".utf8)
+        )
+
+        do {
+            _ = try library.previewZedThemeFiles([file], extensionID: "malformed")
+            Issue.record("Expected malformed Zed JSON to be rejected")
+        } catch ZedThemeImportError.invalidThemeFile {
+            // Expected: do not leak Foundation's generic Cocoa decoding error.
+        } catch {
+            Issue.record("Expected ZedThemeImportError.invalidThemeFile, got \(error)")
+        }
+    }
+
+    @Test func removesOneImportedSubthemeWithoutRewritingSource() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrainstormSubthemeTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let data = Data("""
+        {
+          "name": "Two Variants",
+          "author": "Theme Author",
+          "themes": [
+            {
+              "name": "Variant Light",
+              "appearance": "light",
+              "style": {
+                "editor.background": "#ffffff",
+                "editor.foreground": "#202020"
+              }
+            },
+            {
+              "name": "Variant Dark",
+              "appearance": "dark",
+              "style": {
+                "editor.background": "#111111",
+                "editor.foreground": "#eeeeee"
+              }
+            }
+          ]
+        }
+        """.utf8)
+        let library = ThemeLibrary(storageDirectory: directory)
+        let imported = try library.importNativeZedTheme(data: data, sourceName: "two-variants")
+        let removedTheme = try #require(imported.themes.first)
+
+        try library.delete(removedTheme, from: imported)
+
+        #expect(library.importedFiles.count == 1)
+        #expect(library.importedFiles.first?.themes.map(\.name) == ["Variant Dark"])
+        #expect(try Data(contentsOf: imported.sourceURL) == data)
+
+        let reloaded = ThemeLibrary(storageDirectory: directory)
+        #expect(reloaded.importedFiles.first?.themes.map(\.name) == ["Variant Dark"])
+        #expect(try Data(contentsOf: imported.sourceURL) == data)
+
+        let restored = try reloaded.importNativeZedTheme(data: data, sourceName: "two-variants")
+        #expect(restored.themes.map(\.name) == ["Variant Light", "Variant Dark"])
+        #expect(try Data(contentsOf: restored.sourceURL) == data)
+
+        let firstRestored = try #require(restored.themes.first)
+        try reloaded.delete(firstRestored, from: restored)
+        let finalFile = try #require(reloaded.importedFiles.first)
+        let finalTheme = try #require(finalFile.themes.first)
+        try reloaded.delete(finalTheme, from: finalFile)
+
+        #expect(reloaded.importedFiles.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: restored.sourceURL.path))
+    }
+
+    @Test func decodesAndFiltersNativeZedRegistryThemes() throws {
+        let data = Data("""
+        {
+          "data": [
+            {
+              "id": "example-theme",
+              "name": "Example Theme",
+              "version": "1.0.0",
+              "description": "A native theme extension.",
+              "authors": ["Theme Author"],
+              "repository": null,
+              "provides": ["themes"],
+              "download_count": 42
+            },
+            {
+              "id": "example-language",
+              "name": "Example Language",
+              "version": "1.0.0",
+              "description": "A language extension.",
+              "authors": [],
+              "repository": null,
+              "provides": ["languages"],
+              "download_count": 3
+            }
+          ]
+        }
+        """.utf8)
+
+        let extensions = try ZedThemeRegistry.extensions(from: data)
+        #expect(extensions.map(\.id) == ["example-theme", "example-language"])
+        #expect(extensions.filter(\.isTheme).map(\.id) == ["example-theme"])
+        #expect(extensions.first?.downloadCount == 42)
+    }
+
+    @Test func extractsOnlySafeNativeThemeFilesFromZedArchives() throws {
+        func tarArchive(entries: [(String, Data)]) -> Data {
+            var archive = Data()
+            for (path, contents) in entries {
+                var header = Data(repeating: 0, count: 512)
+                let name = Array(path.utf8)
+                header.replaceSubrange(0 ..< name.count, with: name)
+                let size = Array(String(contents.count, radix: 8).utf8)
+                header.replaceSubrange(124 ..< 124 + size.count, with: size)
+                header[156] = 48 // regular file
+                archive.append(header)
+                archive.append(contents)
+                archive.append(Data(repeating: 0, count: (512 - contents.count % 512) % 512))
+            }
+            archive.append(Data(repeating: 0, count: 1_024))
+            return archive
+        }
+
+        let goodJSON = Data("{\"name\":\"Native\",\"themes\":[]}".utf8)
+        let archive = tarArchive(entries: [
+            ("./themes/native.json", goodJSON),
+            ("themes/../unsafe.json", Data("unsafe".utf8)),
+            ("README.md", Data("readme".utf8)),
+        ])
+
+        let files = try ZedThemeArchive.themeFiles(fromTar: archive)
+        #expect(files.map(\.path) == ["themes/native.json"])
+        #expect(files.first?.data == goodJSON)
+
+        let compressed = Data(base64Encoded: "H4sIAAAAAAAAA8tLLMksS9WtSk3RLclIzU0FAAtdVUwQAAAA")!
+        #expect(String(decoding: try ZedThemeArchive.gunzip(compressed), as: UTF8.self) == "native-zed-theme")
+    }
+
+    @Test func persistsRegistryAndVersionedExtensionArchives() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrainstormZedCacheTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let cache = ZedThemeRegistryCache(directory: directory)
+        let registryData = Data("{\"data\":[]}".utf8)
+        try await cache.storeRegistryData(registryData)
+
+        #expect(await cache.registryData(maxAge: 60) == registryData)
+        #expect(await cache.staleRegistryData() == registryData)
+        let cachedSnapshot = try await ZedThemeRegistry.fetchSnapshot(cache: cache)
+        #expect(cachedSnapshot.source == .freshCache)
+        #expect(cachedSnapshot.themes.isEmpty)
+        #expect(
+            await cache.registryData(
+                maxAge: 1,
+                now: Date().addingTimeInterval(120)
+            ) == nil
+        )
+
+        let versionOne = ZedRegistryExtension(
+            id: "example-theme",
+            name: "Example",
+            version: "1.0.0",
+            description: "",
+            authors: [],
+            repository: nil,
+            provides: ["themes"],
+            downloadCount: nil
+        )
+        let versionTwo = ZedRegistryExtension(
+            id: "example-theme",
+            name: "Example",
+            version: "2.0.0",
+            description: "",
+            authors: [],
+            repository: nil,
+            provides: ["themes"],
+            downloadCount: nil
+        )
+        let firstKey = ZedThemeRegistry.archiveCacheKey(for: versionOne)
+        let secondKey = ZedThemeRegistry.archiveCacheKey(for: versionTwo)
+        let archive = Data("original-zed-archive".utf8)
+
+        #expect(firstKey != secondKey)
+        try await cache.storeArchiveData(archive, cacheKey: firstKey)
+        #expect(await cache.archiveData(cacheKey: firstKey) == archive)
+        #expect(await cache.archiveData(cacheKey: secondKey) == nil)
+    }
+
+    @Test func derivesReadableDistinctPaletteFromTranslucentZedColors() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrainstormZedPaletteTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let data = Data("""
+        {
+          "name": "Palette Fixture",
+          "author": "Zed",
+          "themes": [
+            {
+              "name": "Fixture Dark",
+              "appearance": "dark",
+              "style": {
+                "editor.background": "#1e1e2e",
+                "editor.foreground": "#cdd6f4",
+                "background": "#27273b",
+                "element.selected": "#3132444d",
+                "text.accent": "#cba6f7",
+                "terminal.ansi.blue": "#89b4fa",
+                "border": "#313244",
+                "editor.active_line.background": "#cdd6f412",
+                "search.match_background": "#94e2d54d"
+              }
+            }
+          ]
+        }
+        """.utf8)
+
+        let library = ThemeLibrary(storageDirectory: directory)
+        let imported = try library.importNativeZedTheme(data: data, sourceName: "fixture")
+        let theme = try #require(imported.themes.first)
+
+        #expect(theme.canvasBackground == "#1E1E2E")
+        #expect(theme.nodeFill == "#27273B")
+        #expect(theme.rootFill == "#89B4FA")
+        #expect(theme.branch == "#CBA6F7")
+        #expect(theme.canvasBackground != theme.nodeFill)
+        #expect(theme.nodeFill != theme.rootFill)
+        #expect(contrastRatio(theme.rootText, theme.rootFill) >= 4.5)
+        #expect(contrastRatio(theme.nodeText, theme.nodeFill) >= 4.5)
+        #expect(theme.grid != "#CDD6F4")
+        #expect(try Data(contentsOf: imported.sourceURL) == data)
+    }
+
+    private func contrastRatio(_ first: String, _ second: String) -> Double {
+        let firstLuminance = ColorContrast.relativeLuminance(hex: first) ?? 0
+        let secondLuminance = ColorContrast.relativeLuminance(hex: second) ?? 0
+        return (max(firstLuminance, secondLuminance) + 0.05)
+            / (min(firstLuminance, secondLuminance) + 0.05)
+    }
+}
+
 @Suite("DocumentSession")
 @MainActor
 struct DocumentSessionTests {
@@ -1771,6 +2276,7 @@ struct DocumentSessionTests {
 
         let backgroundAutosave = BrainstormFile(root: .root(title: "B autosave"))
         try session.writeAutosave(file: backgroundAutosave, for: b.id)
+        session.updateDirtyState(id: b.id, isDirty: true, contentRevision: 1, savedRevision: 0)
         #expect(session.state.activeDocumentID == a.id)
 
         let extras = session.additionalDocumentIDsToRestore(primary: a.id)
@@ -1798,6 +2304,9 @@ struct DocumentSessionTests {
         let a = session.registerNewDocument(displayName: "A")
         let b = session.registerNewDocument(displayName: "B")
         let c = session.registerNewDocument(displayName: "C")
+        session.updateDirtyState(id: a.id, isDirty: true, contentRevision: 1, savedRevision: 0)
+        session.updateDirtyState(id: b.id, isDirty: true, contentRevision: 1, savedRevision: 0)
+        session.updateDirtyState(id: c.id, isDirty: true, contentRevision: 1, savedRevision: 0)
         #expect(session.additionalDocumentIDsToRestore(primary: c.id).count == 2)
 
         // Finder double-click while launching: only open the requested file.
@@ -1843,6 +2352,18 @@ struct DocumentSessionTests {
         #expect(!payload.isDirty)
         #expect(payload.fileURL == nil)
         #expect(payload.root.children.isEmpty)
+    }
+
+    @Test func cleanUntitledSeedsDoNotBypassTheWelcomeScreen() throws {
+        let (session, dir) = try tempSession()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let blank = session.registerNewDocument()
+        #expect(session.launchRestorableDocumentID() == nil)
+        #expect(session.additionalDocumentIDsToRestore(primary: blank.id).isEmpty)
+
+        session.updateDirtyState(id: blank.id, isDirty: true, contentRevision: 1, savedRevision: 0)
+        #expect(session.launchRestorableDocumentID() == blank.id)
     }
 
     @Test func storeRestoreAndPerformAutosaveRoundTrip() throws {
@@ -1913,9 +2434,21 @@ struct DocumentSessionTests {
         #expect(recents.items.map(\.menuTitle) == ["Delta", "Alpha", "Gamma"])
         #expect(recents.items.count == 3)
 
+        let savedFrame = CGRect(x: 320, y: 180, width: 900, height: 620)
+        recents.noteWindowFrame(savedFrame, for: a)
+        recents.note(url: a) // Re-opening must preserve the saved geometry.
+        #expect(recents.entry(id: a.path)?.windowFrame?.rect == savedFrame)
+
         let reloaded = RecentDocuments(storageURL: storage)
-        #expect(reloaded.items.map(\.menuTitle) == ["Delta", "Alpha", "Gamma"])
-        #expect(reloaded.resolveURL(for: reloaded.items[0])?.lastPathComponent == "Delta.bs")
+        #expect(reloaded.items.map(\.menuTitle) == ["Alpha", "Delta", "Gamma"])
+        #expect(reloaded.resolveURL(for: reloaded.items[0])?.lastPathComponent == "Alpha.bs")
+        #expect(reloaded.entry(id: a.path)?.windowFrame?.rect == savedFrame)
+
+        let movedDisplay = RecentDocuments.fittedWindowFrame(
+            CGRect(x: 3_000, y: 2_000, width: 900, height: 620),
+            visibleFrames: [CGRect(x: 0, y: 0, width: 1_280, height: 800)]
+        )
+        #expect(movedDisplay == CGRect(x: 380, y: 180, width: 900, height: 620))
 
         reloaded.clear()
         #expect(reloaded.items.isEmpty)

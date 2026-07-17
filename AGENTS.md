@@ -24,6 +24,10 @@ When adding or changing any user-facing functionality, update all three document
 
 Round-trip the full WordPress page body when publishing an update, and verify the public page after syncing it. Keep the README and skill instructions accurate for the released behavior, not only for local development.
 
+## WordPress publishing scope
+
+Do not post bug fixes, internal maintenance, visual polish, or other non-important changes to WordPress project pages. When a change is user-facing but it is unclear whether it is important enough for the public page, ask before publishing it.
+
 ## Joplin project notes
 
 - Remote notebook: `Y26/P/Brainstorm` (`bc23eb39a5514fe59b4c27609ede99b9`).

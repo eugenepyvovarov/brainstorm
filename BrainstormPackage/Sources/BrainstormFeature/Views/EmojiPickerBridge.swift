@@ -90,7 +90,6 @@ struct EmojiSelectorRow: View {
                     Label("Emoji…", systemImage: "face.smiling")
                 }
                 .controlSize(.small)
-                .help("Open the system emoji & symbol picker")
 
                 Button("Clear") { onClear() }
                     .controlSize(.small)
@@ -124,7 +123,6 @@ struct EmojiSelectorRow: View {
                                 }
                         }
                         .buttonStyle(.plain)
-                        .help(isSelected ? "Click again to clear" : "Use \(emoji)")
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
