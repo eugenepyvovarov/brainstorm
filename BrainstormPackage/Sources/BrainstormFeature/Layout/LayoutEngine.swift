@@ -12,6 +12,10 @@ public struct LayoutNode: Identifiable, Equatable, Sendable {
     public let depth: Int
     public let style: NodeStyle
     public let media: NodeMedia
+    /// Note payload selected by the current layout policy.
+    public let note: NodeNote?
+    /// Static note-card frame below the node card. Branch endpoints still use `frame`.
+    public let noteFrame: CGRect?
     public let hasManualPosition: Bool
     /// Edge color for links *from this node* to children (may be nil → default).
     public let branchHex: String?
@@ -32,6 +36,19 @@ public struct LayoutResult: Equatable, Sendable {
     public let contentSize: CGSize
 
     public static let empty = LayoutResult(nodes: [], edges: [], contentSize: .zero)
+}
+
+/// Controls whether placement emits only the currently unfolded map or the
+/// complete stored hierarchy.
+///
+/// Measurement always reserves the complete tree so folding a branch does not
+/// reflow its visible siblings. ``allDescendants`` uses those same measurements
+/// and manual offsets while emitting folded descendants and their edges. This
+/// gives presentation mode the exact geometry of the fully expanded map without
+/// mutating the document's saved expansion state.
+public enum LayoutPlacementPolicy: Equatable, Sendable {
+    case expandedOnly
+    case allDescendants
 }
 
 public struct LayoutEngine: Sendable {
@@ -58,6 +75,12 @@ public struct LayoutEngine: Sendable {
     public var mediaSlot: CGFloat = 22
     /// Gap between media and title (matches BrainstormNodeView HStack spacing).
     public var mediaSpacing: CGFloat = 6
+    /// Vertical gap between a node card and its optional note card.
+    public var noteSpacing: CGFloat = 8
+    /// Notes stay readable even when their node title is only a few characters.
+    public var minNoteWidth: CGFloat = 300
+    /// Keep note cards aligned with the normal maximum node-card width.
+    public var maxNoteWidth: CGFloat = 420
     public init() {}
 
     /// Optional live title while editing — layout uses the draft immediately so the
@@ -71,8 +94,18 @@ public struct LayoutEngine: Sendable {
         }
     }
 
-    public func layout(root: BrainstormNode, liveTitle: LiveTitleOverride? = nil) -> LayoutResult {
-        let metrics = measure(root, isRoot: true, liveTitle: liveTitle)
+    public func layout(
+        root: BrainstormNode,
+        liveTitle: LiveTitleOverride? = nil,
+        noteInclusion: BrainstormNoteInclusion = .none,
+        placementPolicy: LayoutPlacementPolicy = .expandedOnly
+    ) -> LayoutResult {
+        let metrics = measure(
+            root,
+            isRoot: true,
+            liveTitle: liveTitle,
+            noteInclusion: noteInclusion
+        )
         var nodes: [LayoutNode] = []
         var edges: [LayoutEdge] = []
 
@@ -84,6 +117,7 @@ public struct LayoutEngine: Sendable {
             originX: originX,
             centerY: originCenterY,
             depth: 0,
+            placementPolicy: placementPolicy,
             nodes: &nodes,
             edges: &edges
         )
@@ -108,6 +142,8 @@ public struct LayoutEngine: Sendable {
                     depth: node.depth,
                     style: node.style,
                     media: node.media,
+                    note: node.note,
+                    noteFrame: node.noteFrame?.offsetBy(dx: shiftX, dy: shiftY).integral,
                     hasManualPosition: node.hasManualPosition,
                     branchHex: node.branchHex
                 )
@@ -123,8 +159,8 @@ public struct LayoutEngine: Sendable {
             }
         }
 
-        let maxX = nodes.map(\.frame.maxX).max() ?? 0
-        let maxY = nodes.map(\.frame.maxY).max() ?? 0
+        let maxX = nodes.map { max($0.frame.maxX, $0.noteFrame?.maxX ?? 0) }.max() ?? 0
+        let maxY = nodes.map { max($0.frame.maxY, $0.noteFrame?.maxY ?? 0) }.max() ?? 0
         // Include edge endpoints (should already lie on node frames) and accessory gutter.
         let edgeMaxX = edges.map { max($0.from.x, $0.to.x) }.max() ?? 0
         let edgeMaxY = edges.map { max($0.from.y, $0.to.y) }.max() ?? 0
@@ -139,26 +175,67 @@ public struct LayoutEngine: Sendable {
 
     private struct SubtreeMetrics {
         var nodeSize: CGSize
+        var noteSize: CGSize?
         var subtreeHeight: CGFloat
         var children: [SubtreeMetrics]
+
+        var clusterHeight: CGFloat {
+            nodeSize.height + (noteSize?.height ?? 0)
+        }
     }
 
     /// Always measure the full tree (including folded branches).
     /// Fold only hides nodes when placing — it must not reflow siblings/ancestors.
-    private func measure(_ node: BrainstormNode, isRoot: Bool, liveTitle: LiveTitleOverride?) -> SubtreeMetrics {
+    private func measure(
+        _ node: BrainstormNode,
+        isRoot: Bool,
+        liveTitle: LiveTitleOverride?,
+        noteInclusion: BrainstormNoteInclusion
+    ) -> SubtreeMetrics {
         let isEditing = liveTitle?.id == node.id
         let title = isEditing ? (liveTitle?.title ?? node.title) : node.title
         let nodeSize = sizeForNode(node, title: title, isRoot: isRoot, isEditing: isEditing)
+        let includedNote = node.note.flatMap {
+            noteInclusion.includes($0) ? $0 : nil
+        }
+        let measuredNoteSize = includedNote.map {
+            let noteWidth = min(
+                maxNoteWidth,
+                max(minNoteWidth, nodeSize.width)
+            )
+            return CGSize(
+                width: noteWidth,
+                height: NodeNoteRendering.measuredHeight(
+                    note: $0,
+                    width: noteWidth,
+                    mode: .canvas
+                ) + noteSpacing
+            )
+        }
+        let clusterHeight = nodeSize.height + (measuredNoteSize?.height ?? 0)
         guard !node.children.isEmpty else {
-            return SubtreeMetrics(nodeSize: nodeSize, subtreeHeight: nodeSize.height, children: [])
+            return SubtreeMetrics(
+                nodeSize: nodeSize,
+                noteSize: measuredNoteSize,
+                subtreeHeight: clusterHeight,
+                children: []
+            )
         }
 
-        let childMetrics = node.children.map { measure($0, isRoot: false, liveTitle: liveTitle) }
+        let childMetrics = node.children.map {
+            measure(
+                $0,
+                isRoot: false,
+                liveTitle: liveTitle,
+                noteInclusion: noteInclusion
+            )
+        }
         let spacing = CGFloat(max(0, childMetrics.count - 1)) * siblingSpacing
         let childrenHeight = childMetrics.reduce(0) { $0 + $1.subtreeHeight } + spacing
         return SubtreeMetrics(
             nodeSize: nodeSize,
-            subtreeHeight: max(nodeSize.height, childrenHeight),
+            noteSize: measuredNoteSize,
+            subtreeHeight: max(clusterHeight, childrenHeight),
             children: childMetrics
         )
     }
@@ -294,6 +371,7 @@ public struct LayoutEngine: Sendable {
         originX: CGFloat,
         centerY: CGFloat,
         depth: Int,
+        placementPolicy: LayoutPlacementPolicy,
         nodes: inout [LayoutNode],
         edges: inout [LayoutEdge]
     ) -> CGRect {
@@ -303,10 +381,19 @@ public struct LayoutEngine: Sendable {
         // origins (which makes some nodes look softer/thinner than others).
         let frame = CGRect(
             x: originX + ox,
-            y: centerY - metrics.nodeSize.height / 2 + oy,
+            y: centerY - metrics.clusterHeight / 2 + oy,
             width: metrics.nodeSize.width,
             height: metrics.nodeSize.height
         ).integral
+        let noteFrame = metrics.noteSize.map { noteSize in
+            CGRect(
+                x: frame.minX,
+                y: frame.maxY + noteSpacing,
+                width: noteSize.width,
+                height: max(1, noteSize.height - noteSpacing)
+            ).integral
+        }
+        let includedNote = noteFrame == nil ? nil : node.note
 
         nodes.append(
             LayoutNode(
@@ -319,6 +406,8 @@ public struct LayoutEngine: Sendable {
                 depth: depth,
                 style: node.style,
                 media: node.media,
+                note: includedNote,
+                noteFrame: noteFrame,
                 hasManualPosition: node.hasManualPosition,
                 branchHex: node.style.branchHex
             )
@@ -326,7 +415,11 @@ public struct LayoutEngine: Sendable {
 
         guard !node.children.isEmpty, !metrics.children.isEmpty else { return frame }
 
-        let childX = originX + metrics.nodeSize.width + levelGap
+        let clusterWidth = max(
+            metrics.nodeSize.width,
+            metrics.noteSize?.width ?? 0
+        )
+        let childX = originX + clusterWidth + levelGap
         // Children use the *auto* center (without parent offset) for packing, but connect to offset frame.
         let autoCenterY = centerY
         let childrenHeight =
@@ -336,13 +429,14 @@ public struct LayoutEngine: Sendable {
 
         for (child, childMetrics) in zip(node.children, metrics.children) {
             let childCenterY = y + childMetrics.subtreeHeight / 2
-            if node.isExpanded {
+            if node.isExpanded || placementPolicy == .allDescendants {
                 let childFrame = place(
                     child,
                     metrics: childMetrics,
                     originX: childX,
                     centerY: childCenterY,
                     depth: depth + 1,
+                    placementPolicy: placementPolicy,
                     nodes: &nodes,
                     edges: &edges
                 )

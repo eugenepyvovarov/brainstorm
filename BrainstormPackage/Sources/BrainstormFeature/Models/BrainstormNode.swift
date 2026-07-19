@@ -228,6 +228,8 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
     public var children: [BrainstormNode]
     public var style: NodeStyle
     public var media: NodeMedia
+    /// Optional sparse body and ordered media attachments for this node.
+    public var note: NodeNote?
     /// Manual offset from automatic layout position (document points). `nil` = auto.
     public var offsetX: Double?
     public var offsetY: Double?
@@ -239,6 +241,7 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         case children
         case style
         case media
+        case note
         case offsetX
         case offsetY
     }
@@ -250,6 +253,7 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         children: [BrainstormNode] = [],
         style: NodeStyle = .default,
         media: NodeMedia = .empty,
+        note: NodeNote? = nil,
         offsetX: Double? = nil,
         offsetY: Double? = nil
     ) {
@@ -259,6 +263,8 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         self.children = children
         self.style = style
         self.media = media
+        let canonicalNote = note?.canonicalized()
+        self.note = canonicalNote?.isEmpty == false ? canonicalNote : nil
         self.offsetX = offsetX
         self.offsetY = offsetY
     }
@@ -290,6 +296,8 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         children = try c.decodeIfPresent([BrainstormNode].self, forKey: .children) ?? []
         style = try c.decodeIfPresent(NodeStyle.self, forKey: .style) ?? .default
         media = try c.decodeIfPresent(NodeMedia.self, forKey: .media) ?? .empty
+        let decodedNote = try c.decodeIfPresent(NodeNote.self, forKey: .note)?.canonicalized()
+        note = decodedNote?.isEmpty == false ? decodedNote : nil
         offsetX = try c.decodeIfPresent(Double.self, forKey: .offsetX)
         offsetY = try c.decodeIfPresent(Double.self, forKey: .offsetY)
     }
@@ -310,11 +318,26 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         if !media.isEmpty {
             try c.encode(media, forKey: .media)
         }
+        if let note = note?.canonicalized(), !note.isEmpty {
+            try c.encode(note, forKey: .note)
+        }
         try c.encodeIfPresent(offsetX, forKey: .offsetX)
         try c.encodeIfPresent(offsetY, forKey: .offsetY)
         if !children.isEmpty {
             try c.encode(children, forKey: .children)
         }
+    }
+
+    /// Canonical v3 representation used by all file writes.
+    public func canonicalized() -> BrainstormNode {
+        var result = self
+        if let canonicalNote = note?.canonicalized(), !canonicalNote.isEmpty {
+            result.note = canonicalNote
+        } else {
+            result.note = nil
+        }
+        result.children = children.map { $0.canonicalized() }
+        return result
     }
 }
 
@@ -341,9 +364,10 @@ public struct BrainstormFile: Codable, Equatable, Sendable {
         self.themeID = themeID
     }
 
-    /// v2 adds style/media/offsets; themeID is optional on the envelope. The
-    /// current encoder writes these fields sparsely when they are meaningful.
-    public static let currentVersion = 2
+    /// v2 adds style/media/offsets. v3 adds sparse typed node notes. Bumping
+    /// the envelope prevents older apps from opening a note-bearing file and
+    /// erasing notes when they save unknown fields.
+    public static let currentVersion = 3
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -358,6 +382,15 @@ public struct BrainstormFile: Codable, Equatable, Sendable {
         try c.encode(version, forKey: .version)
         try c.encodeIfPresent(themeID, forKey: .themeID)
         try c.encode(root, forKey: .root)
+    }
+
+    /// Every write upgrades legacy v1/v2 envelopes to canonical sparse v3.
+    public func canonicalizedForWriting() -> BrainstormFile {
+        BrainstormFile(
+            version: Self.currentVersion,
+            root: root.canonicalized(),
+            themeID: themeID
+        )
     }
 }
 

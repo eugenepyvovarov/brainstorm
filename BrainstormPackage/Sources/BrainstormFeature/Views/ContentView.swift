@@ -2,6 +2,131 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Pure state for AppKit's asynchronous full-screen transition. Keeping the
+/// desired presentation lifecycle separate from `NSWindow.styleMask` prevents
+/// a fast Escape from tearing down the presentation while the window is still
+/// entering full screen.
+struct PresentationFullScreenLifecycle: Equatable {
+    enum Phase: Equatable {
+        case inactive
+        case preparingEntry
+        case entering
+        case active
+        case windowed
+        case exitPendingDuringEntry
+        case exiting
+    }
+
+    enum Effect: Equatable {
+        case none
+        case requestEntry
+        case requestExit
+        case finish
+    }
+
+    private(set) var phase: Phase = .inactive
+
+    mutating func begin(isWindowFullScreen: Bool) -> Effect {
+        guard phase == .inactive else { return .none }
+        if isWindowFullScreen {
+            phase = .active
+            return .none
+        }
+        phase = .preparingEntry
+        return .requestEntry
+    }
+
+    /// Called on the queued main-actor turn immediately before asking AppKit
+    /// to enter full screen. Returns false when an earlier exit cancelled the
+    /// still-pending request.
+    mutating func prepareEntryRequest() -> Bool {
+        guard phase == .preparingEntry else { return false }
+        phase = .entering
+        return true
+    }
+
+    mutating func entryRequestCompleted(requested: Bool) -> Effect {
+        guard phase == .entering else { return .none }
+        guard requested else {
+            phase = .windowed
+            return .none
+        }
+        return .none
+    }
+
+    mutating func requestExit() -> Effect {
+        switch phase {
+        case .inactive, .exitPendingDuringEntry, .exiting:
+            return .none
+        case .preparingEntry:
+            phase = .inactive
+            return .finish
+        case .entering:
+            phase = .exitPendingDuringEntry
+            return .none
+        case .active:
+            phase = .exiting
+            return .requestExit
+        case .windowed:
+            phase = .inactive
+            return .finish
+        }
+    }
+
+    mutating func didEnter() -> Effect {
+        switch phase {
+        case .entering:
+            phase = .active
+            return .none
+        case .exitPendingDuringEntry:
+            phase = .exiting
+            return .requestExit
+        default:
+            return .none
+        }
+    }
+
+    mutating func exitRequestCompleted(expectsDidExit: Bool) -> Effect {
+        guard phase == .exiting else { return .none }
+        guard expectsDidExit else {
+            phase = .inactive
+            return .finish
+        }
+        return .none
+    }
+
+    mutating func didExit() -> Effect {
+        guard phase != .inactive else { return .none }
+        phase = .inactive
+        return .finish
+    }
+
+    mutating func didFailToEnter() -> Effect {
+        switch phase {
+        case .exitPendingDuringEntry:
+            phase = .inactive
+            return .finish
+        case .entering:
+            phase = .windowed
+            return .none
+        default:
+            return .none
+        }
+    }
+
+    mutating func didFailToExit() -> Effect {
+        guard phase == .exiting else { return .none }
+        // The window remains full screen. Return to an active state so a
+        // subsequent Escape can retry the asynchronous AppKit request.
+        phase = .active
+        return .none
+    }
+
+    mutating func reset() {
+        phase = .inactive
+    }
+}
+
 public struct ContentView: View {
     let documentID: UUID
     @State private var store: BrainstormStore
@@ -19,8 +144,23 @@ public struct ContentView: View {
     /// Prevent the final view disappearance from recreating a session entry
     /// after this document has intentionally been closed.
     @State private var isClosing = false
+    /// Frozen root used by the one-node-at-a-time presentation surface.
+    /// Presentation state is intentionally transient and never dirties `.bs`.
+    @State private var presentationSnapshot: BrainstormNode?
+    /// Selection captured with the frozen presentation snapshot.
+    @State private var presentationStartNodeID: UUID?
+    @State private var presentationFullScreenLifecycle =
+        PresentationFullScreenLifecycle()
+    /// Node currently lifted from the canvas into the centered note composer.
+    /// This is transient workspace state and is never serialized into `.bs`.
+    @State private var noteEditingNodeID: UUID?
+    /// Keeps AppKit monitors and the canvas locked until an outgoing note
+    /// transition has actually left the window.
+    @State private var isNoteWorkspaceLocked = false
+    @Namespace private var noteFocusNamespace
     @Environment(\.openWindow) private var openWindow
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(documentID: UUID) {
         self.documentID = documentID
@@ -52,6 +192,13 @@ public struct ContentView: View {
                     store.isFocusMode = isFocusMode
                 }
             }
+            .onChange(of: store.structureEpoch) { _, _ in
+                if let noteEditingNodeID,
+                   store.node(id: noteEditingNodeID) == nil
+                {
+                    dismissNoteWorkspaceImmediately()
+                }
+            }
             .task(id: store.fileURL) {
                 await monitorExternalFileChanges()
             }
@@ -62,6 +209,38 @@ public struct ContentView: View {
                 Button("Keep My Changes", role: .cancel) {}
             } message: {
                 Text("Another tool changed this mind map. Reloading will discard your unsaved changes in Brainstorm.")
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: NSWindow.didEnterFullScreenNotification
+            )) { notification in
+                guard isPresentationWindowNotification(notification) else { return }
+                handlePresentationFullScreenEffect(
+                    presentationFullScreenLifecycle.didEnter()
+                )
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: NSWindow.didExitFullScreenNotification
+            )) { notification in
+                guard isPresentationWindowNotification(notification) else { return }
+                handlePresentationFullScreenEffect(
+                    presentationFullScreenLifecycle.didExit()
+                )
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: .brainstormWindowDidFailToEnterFullScreen
+            )) { notification in
+                guard isPresentationWindowNotification(notification) else { return }
+                handlePresentationFullScreenEffect(
+                    presentationFullScreenLifecycle.didFailToEnter()
+                )
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: .brainstormWindowDidFailToExitFullScreen
+            )) { notification in
+                guard isPresentationWindowNotification(notification) else { return }
+                handlePresentationFullScreenEffect(
+                    presentationFullScreenLifecycle.didFailToExit()
+                )
             }
     }
 
@@ -85,24 +264,26 @@ public struct ContentView: View {
             onDisappear: {
                 autosaveTask?.cancel()
                 if !isClosing {
+                    flushActiveNoteDraft()
                     store.performAutosave()
                 }
             },
             onEditingChange: { syncFocusWithEditingState(editingID: $0) },
             onSelectionChange: {
                 // Never steal focus from the search field when matches update selection.
-                if !store.isEditing && !searchFocused {
-                    DispatchQueue.main.async { self.canvasFocused = true }
+                if !store.isEditing && !searchFocused && !isNoteWorkspaceLocked {
+                    DispatchQueue.main.async {
+                        guard !isNoteWorkspaceLocked else { return }
+                        canvasFocused = true
+                    }
                 }
             },
             onAutosave: { immediate in scheduleAutosave(immediate: immediate) },
             onUndo: {
-                store.undo()
-                syncFocusWithEditingState()
+                performContextualUndo()
             },
             onRedo: {
-                store.redo()
-                syncFocusWithEditingState()
+                performContextualRedo()
             },
             onSave: { saveDocument(saveAs: $0) },
             onOpen: { openDocument() },
@@ -111,128 +292,161 @@ public struct ContentView: View {
             onNewTab: { openNewTab(in: $0) },
             onExport: { exportDocument(as: $0) },
             onClose: { closeCurrentDocument(window: $0) },
+            onPrepareForApplicationTermination: {
+                prepareForApplicationTermination()
+            },
+            onDiscardForApplicationTermination: {
+                discardUnsavedChangesForApplicationTermination()
+            },
             onShowHelp: { showKeyboardHelp = true },
-            onExternalDocuments: { openExternalDocuments() }
+            onExternalDocuments: { openExternalDocuments() },
+            isPresentationActive: { presentationSnapshot != nil },
+            isNoteEditing: { isNoteWorkspaceLocked },
+            onPresent: { startPresentation() },
+            onExitPresentation: { requestPresentationExit() },
+            onEditNote: { toggleNoteEditorForSelection() },
+            onCloseNote: { closeNoteEditor() }
         )
     }
 
+    @ViewBuilder
     private var rootChrome: some View {
-        VStack(spacing: 0) {
-            mainWorkspace
-            KeyboardStatusBar(
-                isEditing: store.isEditing,
-                onShowHelp: { showKeyboardHelp = true }
-            )
+        if let presentationSnapshot {
+            PresentationView(
+                root: presentationSnapshot,
+                initialNodeID: presentationStartNodeID,
+                theme: store.theme
+            ) { note in
+                NodeNoteContentView(note: note, mode: .presentation)
+            } onExit: {
+                requestPresentationExit()
+            }
+            .environment(\.brainstormTheme, store.theme)
+        } else {
+            VStack(spacing: 0) {
+                mainWorkspace
+                KeyboardStatusBar(
+                    isEditing: store.isEditing,
+                    isEditingNote: noteEditingNodeID != nil,
+                    onShowHelp: { showKeyboardHelp = true }
+                )
+            }
         }
     }
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Button("Undo", systemImage: "arrow.uturn.backward") {
-                store.undo()
-                syncFocusWithEditingState()
-            }
-            .disabled(!store.canUndo)
-            .focusable(false)
-
-            Button("Redo", systemImage: "arrow.uturn.forward") {
-                store.redo()
-                syncFocusWithEditingState()
-            }
-            .disabled(!store.canRedo)
-            .focusable(false)
-        }
-        ToolbarItemGroup(placement: .primaryAction) {
-            ThemePickerMenu(themeID: store.themeID) { id in
-                store.applyTheme(id)
-            }
-            .focusable(false)
-
-            // Search UI temporarily disabled (type-to-edit conflicts); re-enable later.
-
-            Button("Zoom Out", systemImage: "minus.magnifyingglass") {
-                store.zoomOut()
-            }
-            .focusable(false)
-
-            Text("\(Int(store.zoomScale * 100))%")
-                .font(.caption.monospacedDigit())
-                .frame(minWidth: 36)
-                .foregroundStyle(.secondary)
-
-            Button {
-                store.zoomReset()
-            } label: {
-                Text("1:1")
-                    .font(.caption.monospacedDigit().weight(.medium))
-                    .padding(.horizontal, 4)
-                    .contentShape(Rectangle())
-            }
-            // A regular text button gets its own macOS toolbar capsule and
-            // visually splits this ToolbarItemGroup. Keep it inside the shared
-            // zoom group while retaining a useful click target.
-            .buttonStyle(.plain)
-            .accessibilityLabel("Actual Size")
-            .accessibilityIdentifier("zoomActualSize")
-            .disabled(abs(store.zoomScale - 1) < 0.001)
-            .focusable(false)
-
-            Button("Zoom In", systemImage: "plus.magnifyingglass") {
-                store.zoomIn()
-            }
-            .focusable(false)
-
-            Button("Focus", systemImage: uiPreferences.isFocusMode ? "circle.lefthalf.filled" : "circle") {
-                store.toggleFocusMode()
-            }
-            .focusable(false)
-
-            Button("Inspector", systemImage: "sidebar.trailing") {
-                uiPreferences.showInspector.toggle()
-            }
-            .focusable(false)
-
-            Button("Keyboard", systemImage: "keyboard") {
-                showKeyboardHelp = true
-            }
-            .focusable(false)
-
-            Button("New Tab", systemImage: "plus.rectangle.on.rectangle") {
-                openNewTab()
-            }
-            .focusable(false)
-
-            Button("New Window", systemImage: "macwindow.badge.plus") {
-                openNewWindow()
-            }
-            .focusable(false)
-
-            Button("Open", systemImage: "folder") {
-                openDocument()
-            }
-            .focusable(false)
-
-            Button("Save", systemImage: "square.and.arrow.down") {
-                saveDocument(saveAs: false)
-            }
-            .focusable(false)
-
-            Button("Save As", systemImage: "square.and.arrow.down.on.square") {
-                saveDocument(saveAs: true)
-            }
-            .focusable(false)
-
-            Menu {
-                ForEach(BrainstormExportFormat.menuCases, id: \.self) { format in
-                    Button(format.menuTitle) {
-                        exportDocument(as: format)
-                    }
+        if presentationSnapshot == nil {
+            ToolbarItemGroup(placement: .navigation) {
+                Button("Undo", systemImage: "arrow.uturn.backward") {
+                    performContextualUndo()
                 }
-            } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
+                .disabled(!isNoteWorkspaceLocked && !store.canUndo)
+                .focusable(false)
+
+                Button("Redo", systemImage: "arrow.uturn.forward") {
+                    performContextualRedo()
+                }
+                .disabled(!isNoteWorkspaceLocked && !store.canRedo)
+                .focusable(false)
             }
-            .focusable(false)
+            ToolbarItemGroup(placement: .primaryAction) {
+                ThemePickerMenu(themeID: store.themeID) { id in
+                    store.applyTheme(id)
+                }
+                .focusable(false)
+
+                // Search UI temporarily disabled (type-to-edit conflicts); re-enable later.
+
+                Button("Zoom Out", systemImage: "minus.magnifyingglass") {
+                    store.zoomOut()
+                }
+                .focusable(false)
+
+                Text("\(Int(store.zoomScale * 100))%")
+                    .font(.caption.monospacedDigit())
+                    .frame(minWidth: 36)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    store.zoomReset()
+                } label: {
+                    Text("1:1")
+                        .font(.caption.monospacedDigit().weight(.medium))
+                        .padding(.horizontal, 4)
+                        .contentShape(Rectangle())
+                }
+                // A regular text button gets its own macOS toolbar capsule and
+                // visually splits this ToolbarItemGroup. Keep it inside the shared
+                // zoom group while retaining a useful click target.
+                .buttonStyle(.plain)
+                .accessibilityLabel("Actual Size")
+                .accessibilityIdentifier("zoomActualSize")
+                .disabled(abs(store.zoomScale - 1) < 0.001)
+                .focusable(false)
+
+                Button("Zoom In", systemImage: "plus.magnifyingglass") {
+                    store.zoomIn()
+                }
+                .focusable(false)
+
+                Button("Focus", systemImage: uiPreferences.isFocusMode ? "circle.lefthalf.filled" : "circle") {
+                    store.toggleFocusMode()
+                }
+                .focusable(false)
+
+                Button("Inspector", systemImage: "sidebar.trailing") {
+                    uiPreferences.showInspector.toggle()
+                }
+                .focusable(false)
+
+                Button("Present", systemImage: "play.rectangle") {
+                    startPresentation()
+                }
+                .focusable(false)
+                .accessibilityIdentifier("startPresentation")
+
+                Button("Keyboard", systemImage: "keyboard") {
+                    showKeyboardHelp = true
+                }
+                .focusable(false)
+
+                Button("New Tab", systemImage: "plus.rectangle.on.rectangle") {
+                    openNewTab()
+                }
+                .focusable(false)
+
+                Button("New Window", systemImage: "macwindow.badge.plus") {
+                    openNewWindow()
+                }
+                .focusable(false)
+
+                Button("Open", systemImage: "folder") {
+                    openDocument()
+                }
+                .focusable(false)
+
+                Button("Save", systemImage: "square.and.arrow.down") {
+                    saveDocument(saveAs: false)
+                }
+                .focusable(false)
+
+                Button("Save As", systemImage: "square.and.arrow.down.on.square") {
+                    saveDocument(saveAs: true)
+                }
+                .focusable(false)
+
+                Menu {
+                    ForEach(BrainstormExportFormat.menuCases, id: \.self) { format in
+                        Button(format.menuTitle) {
+                            exportDocument(as: format)
+                        }
+                    }
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
+                .focusable(false)
+            }
         }
     }
 
@@ -292,6 +506,105 @@ public struct ContentView: View {
         }
     }
 
+    // MARK: - Presentation
+
+    private func startPresentation() {
+        guard presentationSnapshot == nil else { return }
+        let selectedNodeID = store.selectedID
+        if noteEditingNodeID != nil {
+            dismissNoteWorkspaceImmediately()
+        }
+        if store.isEditing {
+            store.commitEditing()
+        }
+        commitActiveNoteEditing()
+        store.performAutosave()
+        presentationStartNodeID = selectedNodeID
+        presentationSnapshot = store.autosaveSnapshot().root
+        focusedNodeID = nil
+        canvasFocused = false
+        handlePresentationFullScreenEffect(
+            presentationFullScreenLifecycle.begin(
+                isWindowFullScreen: DocumentWindowTabbing.isFullScreen(
+                    documentID: documentID
+                )
+            )
+        )
+    }
+
+    private func requestPresentationExit() {
+        guard presentationSnapshot != nil else { return }
+        handlePresentationFullScreenEffect(
+            presentationFullScreenLifecycle.requestExit()
+        )
+    }
+
+    private func handlePresentationFullScreenEffect(
+        _ effect: PresentationFullScreenLifecycle.Effect
+    ) {
+        switch effect {
+        case .none:
+            return
+        case .requestEntry:
+            // Let SwiftUI install the presentation surface and keyboard
+            // monitor before AppKit begins its asynchronous transition.
+            DispatchQueue.main.async {
+                guard presentationSnapshot != nil,
+                      presentationFullScreenLifecycle.prepareEntryRequest()
+                else { return }
+                if DocumentWindowTabbing.isFullScreen(documentID: documentID) {
+                    handlePresentationFullScreenEffect(
+                        presentationFullScreenLifecycle.didEnter()
+                    )
+                    return
+                }
+                let requested = DocumentWindowTabbing.setFullScreen(
+                    true,
+                    documentID: documentID
+                )
+                handlePresentationFullScreenEffect(
+                    presentationFullScreenLifecycle.entryRequestCompleted(
+                        requested: requested
+                    )
+                )
+            }
+        case .requestExit:
+            let wasFullScreen = DocumentWindowTabbing.isFullScreen(
+                documentID: documentID
+            )
+            let requested = DocumentWindowTabbing.setFullScreen(
+                false,
+                documentID: documentID
+            )
+            handlePresentationFullScreenEffect(
+                presentationFullScreenLifecycle.exitRequestCompleted(
+                    expectsDidExit: requested && wasFullScreen
+                )
+            )
+        case .finish:
+            finishPresentation()
+        }
+    }
+
+    private func isPresentationWindowNotification(
+        _ notification: Notification
+    ) -> Bool {
+        guard presentationSnapshot != nil,
+              let window = notification.object as? NSWindow
+        else { return false }
+        return DocumentWindowTabbing.documentID(for: window) == documentID
+    }
+
+    private func finishPresentation() {
+        guard presentationSnapshot != nil else { return }
+        presentationFullScreenLifecycle.reset()
+        presentationSnapshot = nil
+        presentationStartNodeID = nil
+        DispatchQueue.main.async {
+            canvasFocused = true
+        }
+    }
+
     // MARK: - Theme chrome
 
     /// Fixed map palettes pin light/dark on the *canvas only*.
@@ -305,8 +618,16 @@ public struct ContentView: View {
     // MARK: - Workspace
 
     private var mainWorkspace: some View {
-        HStack(spacing: 0) {
-            BrainstormCanvasView(store: store, focusedNodeID: $focusedNodeID)
+        ZStack {
+            HStack(spacing: 0) {
+                BrainstormCanvasView(
+                    store: store,
+                    focusedNodeID: $focusedNodeID,
+                    noteEditingNodeID: noteEditingNodeID,
+                    isInteractionLocked: isNoteWorkspaceLocked,
+                    noteFocusNamespace: noteFocusNamespace,
+                    onOpenNote: openNoteEditor
+                )
                 .focusable(true)
                 .focused($canvasFocused)
                 .focusEffectDisabled()
@@ -316,15 +637,196 @@ public struct ContentView: View {
                     handleKeyPress(keyPress)
                 }
 
-            if uiPreferences.showInspector {
-                NodeInspectorView(store: store)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                if uiPreferences.showInspector {
+                    NodeInspectorView(store: store)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+            }
+            .allowsHitTesting(!isNoteWorkspaceLocked)
+            .accessibilityHidden(isNoteWorkspaceLocked)
+            .scaleEffect(!isNoteWorkspaceLocked || reduceMotion ? 1 : 0.985)
+            .saturation(isNoteWorkspaceLocked ? 0.72 : 1)
+
+            if let nodeID = noteEditingNodeID,
+               store.node(id: nodeID) != nil
+            {
+                Rectangle()
+                    .fill(Color.black.opacity(colorScheme == .dark ? 0.5 : 0.34))
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        closeNoteEditor()
+                    }
+                    .accessibilityHidden(true)
+
+                NodeNoteFocusSurface(
+                    store: store,
+                    nodeID: nodeID,
+                    namespace: noteFocusNamespace,
+                    onDone: closeNoteEditor
+                )
+                .zIndex(2)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: uiPreferences.showInspector)
         .animation(.easeInOut(duration: 0.25), value: store.themeID)
         // Nodes resolve fill/text/branch from this environment value.
         .environment(\.brainstormTheme, store.theme)
+        .onChange(of: noteEditingNodeID) { _, newValue in
+            if newValue != nil {
+                focusedNodeID = nil
+                canvasFocused = false
+            }
+        }
+    }
+
+    private func toggleNoteEditorForSelection() {
+        guard presentationSnapshot == nil,
+              !isNoteWorkspaceLocked || noteEditingNodeID != nil
+        else {
+            return
+        }
+        if noteEditingNodeID == store.selectedID {
+            closeNoteEditor()
+            return
+        }
+        guard let nodeID = store.selectedID,
+              store.node(id: nodeID) != nil
+        else {
+            return
+        }
+        openNoteEditor(nodeID)
+    }
+
+    private func openNoteEditor(_ nodeID: UUID) {
+        guard presentationSnapshot == nil,
+              !isNoteWorkspaceLocked || noteEditingNodeID != nil,
+              store.node(id: nodeID) != nil
+        else {
+            return
+        }
+        if noteEditingNodeID != nil {
+            commitActiveNoteEditing()
+        }
+        if store.isEditing {
+            store.commitEditing()
+        }
+        store.select(nodeID)
+        isNoteWorkspaceLocked = true
+        canvasFocused = false
+        withAnimation(noteFocusAnimation) {
+            noteEditingNodeID = nodeID
+        }
+    }
+
+    private func closeNoteEditor() {
+        guard noteEditingNodeID != nil else { return }
+        commitActiveNoteEditing()
+        if reduceMotion {
+            noteEditingNodeID = nil
+            finishNoteWorkspaceTransition()
+            return
+        }
+
+        withAnimation(
+            noteFocusAnimation,
+            completionCriteria: .removed
+        ) {
+            noteEditingNodeID = nil
+        } completion: {
+            finishNoteWorkspaceTransition()
+        }
+    }
+
+    private func finishNoteWorkspaceTransition() {
+        isNoteWorkspaceLocked = false
+        canvasFocused = true
+    }
+
+    /// Removes the transient note workspace before replacing the document or
+    /// changing to a mutually exclusive full-screen surface.
+    private func dismissNoteWorkspaceImmediately() {
+        commitActiveNoteEditing()
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            noteEditingNodeID = nil
+        }
+        isNoteWorkspaceLocked = false
+        canvasFocused = true
+    }
+
+    private var noteFocusAnimation: Animation? {
+        reduceMotion ? nil : .spring(response: 0.46, dampingFraction: 0.86)
+    }
+
+    /// NSTextView keeps rich text local during its short publish debounce.
+    /// Explicitly flush it before closing the store's coalesced edit session;
+    /// focus resignation is retained only to end AppKit editing cleanly.
+    private func commitActiveNoteEditing() {
+        flushActiveNoteDraft()
+        activeDocumentWindow?.makeFirstResponder(nil)
+        store.commitNoteEditing()
+    }
+
+    /// Push the live TextKit attributed string through its binding
+    /// synchronously. Save, export, autosave-on-disappear, and the window-close
+    /// dirty check must not wait for the editor's short publish debounce.
+    private func flushActiveNoteDraft() {
+        guard noteEditingNodeID != nil else { return }
+        activeNoteTextView?.flushPendingNoteChanges()
+    }
+
+    private var activeDocumentWindow: NSWindow? {
+        DocumentWindowTabbing.window(for: documentID)
+            ?? NSApp.keyWindow
+            ?? NSApp.mainWindow
+    }
+
+    private var activeNoteTextView: NodeNoteTextView? {
+        if let textView = activeDocumentWindow?.firstResponder as? NodeNoteTextView {
+            return textView
+        }
+        guard let contentView = activeDocumentWindow?.contentView else { return nil }
+        return noteTextView(in: contentView)
+    }
+
+    private func noteTextView(in view: NSView) -> NodeNoteTextView? {
+        if let textView = view as? NodeNoteTextView {
+            return textView
+        }
+        for child in view.subviews {
+            if let textView = noteTextView(in: child) {
+                return textView
+            }
+        }
+        return nil
+    }
+
+    private func performContextualUndo() {
+        if isNoteWorkspaceLocked,
+           let responder = NSApp.keyWindow?.firstResponder,
+           responder is NSTextView || responder is NSTextField,
+           responder.undoManager?.canUndo == true
+        {
+            responder.undoManager?.undo()
+            return
+        }
+        store.undo()
+        syncFocusWithEditingState()
+    }
+
+    private func performContextualRedo() {
+        if isNoteWorkspaceLocked,
+           let responder = NSApp.keyWindow?.firstResponder,
+           responder is NSTextView || responder is NSTextField,
+           responder.undoManager?.canRedo == true
+        {
+            responder.undoManager?.redo()
+            return
+        }
+        store.redo()
+        syncFocusWithEditingState()
     }
 
     // MARK: - Keyboard (secondary path; NSEvent monitor is primary)
@@ -436,7 +938,19 @@ public struct ContentView: View {
         var mayReplaceCurrent = canReplaceCurrentWithOpen
         for url in uniqueURLs {
             if let openDocumentID = DocumentSession.shared.documentID(forFileURL: url) {
-                DocumentWindowTabbing.activate(documentID: openDocumentID)
+                RecentDocuments.shared.note(url: url)
+                // Session descriptors survive relaunch, while the AppKit
+                // window registry does not. Reopen that exact descriptor when
+                // it is dormant so its latest recovery autosave is preserved.
+                if openDocumentID == documentID {
+                    restoreWindowFrame(for: url)
+                    continue
+                }
+                if DocumentWindowTabbing.activate(documentID: openDocumentID) {
+                    continue
+                }
+                openDocumentWindow(id: openDocumentID, asTabIn: documentID)
+                mayReplaceCurrent = false
                 continue
             }
 
@@ -492,6 +1006,7 @@ public struct ContentView: View {
     /// Returns `true` when the document was saved (or Save As completed).
     @discardableResult
     private func saveDocument(saveAs: Bool) -> Bool {
+        flushActiveNoteDraft()
         if store.isEditing { store.commitEditing() }
         if !saveAs, store.fileURL != nil {
             let ok = store.save()
@@ -538,6 +1053,16 @@ public struct ContentView: View {
             else { return }
 
             let currentData = try? Data(contentsOf: currentURL)
+            if let previousData = monitoredFileData,
+               let currentData,
+               previousData != currentData
+            {
+                // TextKit publishes note content on a short debounce. Flush it
+                // before consulting `isDirty`; otherwise an external atomic
+                // replacement can be classified as safe and immediately erase
+                // the still-local draft.
+                flushActiveNoteDraft()
+            }
             switch ExternalFileChangePolicy.action(
                 previousData: monitoredFileData,
                 currentData: currentData,
@@ -547,6 +1072,9 @@ public struct ContentView: View {
                 continue
             case .reload:
                 monitoredFileData = currentData
+                if noteEditingNodeID != nil {
+                    dismissNoteWorkspaceImmediately()
+                }
                 store.load(from: currentURL)
                 syncFocusWithEditingState()
             case .askBeforeReloading:
@@ -564,21 +1092,48 @@ public struct ContentView: View {
 
     private func reloadCurrentFileFromDisk() {
         guard let url = store.fileURL else { return }
+        if noteEditingNodeID != nil {
+            dismissNoteWorkspaceImmediately()
+        }
         store.load(from: url)
         refreshMonitoredFileData(from: url)
         syncFocusWithEditingState()
     }
 
     private func exportDocument(as format: BrainstormExportFormat) {
+        flushActiveNoteDraft()
         if store.isEditing { store.commitEditing() }
 
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [format.contentType]
         panel.nameFieldStringValue = "\(store.mapName).\(format.fileExtension)"
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         panel.allowsOtherFileTypes = false
-        panel.message = "Export the complete mind map as \(format.displayName)"
+        let configurePanel: (BrainstormExportOptions) -> Void = {
+            [weak panel] options in
+            guard let panel else { return }
+            let descriptor = BrainstormExporter.descriptor(
+                root: store.root,
+                format: format,
+                options: options
+            )
+            let currentName = panel.nameFieldStringValue
+            let baseName = (currentName as NSString).deletingPathExtension
+            panel.allowedContentTypes = [descriptor.contentType]
+            panel.nameFieldStringValue =
+                "\(baseName).\(descriptor.fileExtension)"
+            panel.message = descriptor.isArchive
+                ? "Export the complete mind map and linked notes as a ZIP archive"
+                : "Export the complete mind map as \(format.displayName)"
+        }
+        let exportOptionsView = BrainstormExportAccessoryView(
+            format: format,
+            onOptionsChanged: configurePanel
+        )
+        configurePanel(exportOptionsView.options)
+        if exportOptionsView.supportsOptions {
+            panel.accessoryView = exportOptionsView
+        }
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         do {
@@ -587,7 +1142,8 @@ public struct ContentView: View {
                 theme: store.theme,
                 colorScheme: colorScheme,
                 format: format,
-                to: url
+                to: url,
+                options: exportOptionsView.options
             )
         } catch {
             store.lastError = "Export failed: \(error.localizedDescription)"
@@ -606,25 +1162,8 @@ public struct ContentView: View {
             return false
         }
 
-        if store.isEditing { store.commitEditing() }
-
-        if store.isDirty {
-            let alert = NSAlert()
-            alert.messageText = "Do you want to save the changes you made to “\(store.mapName)”?"
-            alert.informativeText = "Your changes will be lost if you don’t save them."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Save")
-            alert.addButton(withTitle: "Don’t Save")
-            alert.addButton(withTitle: "Cancel")
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                // Existing file → Save; untitled → Save As panel.
-                guard saveDocument(saveAs: store.fileURL == nil) else { return false }
-            case .alertSecondButtonReturn:
-                break // Don’t Save
-            default:
-                return false // Cancel
-            }
+        guard reviewUnsavedChanges() != .cancel else {
+            return false
         }
 
         isClosing = true
@@ -632,15 +1171,185 @@ public struct ContentView: View {
         return true
     }
 
+    private func prepareForApplicationTermination()
+        -> ApplicationTerminationPreparation
+    {
+        reviewUnsavedChanges()
+    }
+
+    private func discardUnsavedChangesForApplicationTermination() {
+        // The view may disappear immediately after AppKit accepts termination.
+        // Suppress its ordinary recovery autosave before replacing/removing the
+        // session entry selected by the user’s final Don’t Save decision.
+        isClosing = true
+        autosaveTask?.cancel()
+        store.cancelPendingNoteAutosave()
+        DocumentSession.shared.discardUnsavedChangesForTermination(documentID)
+    }
+
+    private func reviewUnsavedChanges()
+        -> ApplicationTerminationPreparation
+    {
+        // The dirty decision must include any TextKit changes that have not
+        // reached the normal idle-debounce boundary yet.
+        flushActiveNoteDraft()
+        if store.isEditing { store.commitEditing() }
+        store.performAutosave()
+
+        guard store.isDirty else {
+            return .proceed
+        }
+
+        let alert = NSAlert()
+        alert.messageText =
+            "Do you want to save the changes you made to “\(store.mapName)”?"
+        alert.informativeText =
+            "Your changes will be lost if you don’t save them."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don’t Save")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            // Existing file → Save; untitled → Save As panel.
+            return saveDocument(saveAs: store.fileURL == nil)
+                ? .proceed
+                : .cancel
+        case .alertSecondButtonReturn:
+            return .discard
+        default:
+            return .cancel
+        }
+    }
+
     private func finalizeDocumentClose(_ window: NSWindow) {
         autosaveTask?.cancel()
+        // End the mounted editor session before removing its recovery
+        // descriptor. Its later SwiftUI onDisappear commit is then a no-op
+        // instead of scheduling a task that could recreate this document.
+        flushActiveNoteDraft()
+        store.commitNoteEditing()
         store.performAutosave()
+        store.cancelPendingNoteAutosave()
         if let fileURL = store.fileURL {
             RecentDocuments.shared.noteWindowFrame(window.frame, for: fileURL)
         }
         DocumentSession.shared.closeDocument(documentID)
         BrainstormStore.releaseShared(documentID: documentID)
         DocumentWindowTabbing.unregister(documentID: documentID, window: window)
+    }
+}
+
+/// Native save-panel controls for the note layer and HTML launch mode. Keeping
+/// the choices in the panel makes them available from both the toolbar and the
+/// File menu without duplicating every export command.
+@MainActor
+private final class BrainstormExportAccessoryView: NSView {
+    private let format: BrainstormExportFormat
+    private let onOptionsChanged: (BrainstormExportOptions) -> Void
+    private let noteInclusionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let presentationCheckbox = NSButton(
+        checkboxWithTitle: "Open in presentation mode",
+        target: nil,
+        action: nil
+    )
+
+    var supportsOptions: Bool {
+        switch format {
+        case .html, .markdown:
+            true
+        case .png, .pdf, .mermaid, .plantuml:
+            false
+        }
+    }
+
+    var options: BrainstormExportOptions {
+        let inclusion: BrainstormNoteInclusion
+        if format != .html && format != .markdown {
+            inclusion = .none
+        } else {
+            switch noteInclusionPopup.indexOfSelectedItem {
+            case 1:
+                inclusion = .all
+            case 2:
+                inclusion = .none
+            default:
+                inclusion = .visible
+            }
+        }
+        return BrainstormExportOptions(
+            noteInclusion: inclusion,
+            htmlInitialMode: format == .html && presentationCheckbox.state == .on
+                ? .presentation
+                : .map
+        )
+    }
+
+    init(
+        format: BrainstormExportFormat,
+        onOptionsChanged: @escaping (BrainstormExportOptions) -> Void = { _ in }
+    ) {
+        self.format = format
+        self.onOptionsChanged = onOptionsChanged
+        super.init(frame: NSRect(x: 0, y: 0, width: 360, height: format == .html ? 74 : 40))
+
+        noteInclusionPopup.addItems(withTitles: [
+            "Shown notes only",
+            "All notes",
+            "No notes",
+        ])
+        noteInclusionPopup.selectItem(at: 0)
+        noteInclusionPopup.setAccessibilityLabel("Notes included in export")
+        noteInclusionPopup.target = self
+        noteInclusionPopup.action = #selector(exportOptionsDidChange)
+
+        let noteLabel = NSTextField(labelWithString: "Notes:")
+        noteLabel.alignment = .right
+        noteLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let noteRow = NSStackView(views: [noteLabel, noteInclusionPopup])
+        noteRow.orientation = .horizontal
+        noteRow.alignment = .centerY
+        noteRow.spacing = 10
+        noteInclusionPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        var rows: [NSView] = [noteRow]
+        if format == .html {
+            presentationCheckbox.setAccessibilityLabel("Open HTML in presentation mode")
+            presentationCheckbox.target = self
+            presentationCheckbox.action = #selector(exportOptionsDidChange)
+            let presentationRow = NSStackView(views: [
+                NSView(frame: NSRect(x: 0, y: 0, width: 54, height: 1)),
+                presentationCheckbox,
+            ])
+            presentationRow.orientation = .horizontal
+            presentationRow.alignment = .centerY
+            presentationRow.spacing = 10
+            rows.append(presentationRow)
+        }
+
+        let stack = NSStackView(views: rows)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -6),
+            noteInclusionPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func exportOptionsDidChange() {
+        onOptionsChanged(options)
     }
 }
 
@@ -695,6 +1404,12 @@ public struct BrainstormWelcomeView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .brainstormExternalDocumentsAvailable)) { _ in
             openPendingDocuments()
+        }
+        .onAppear {
+            // `Window` scenes can preserve their SwiftUI state after dismiss
+            // and later reopen. The launch guard is only for one visible
+            // Welcome interaction, so reset it for the next appearance.
+            didLaunchMap = false
         }
         .alert("Couldn’t Open Map", isPresented: errorAlertBinding) {
             Button("OK", role: .cancel) { errorMessage = nil }
@@ -827,6 +1542,25 @@ public struct BrainstormWelcomeView: View {
             recents.remove(id: id)
             return
         }
+        // A session descriptor may be recoverable even though its window did
+        // not survive the previous app process. Launch that document identity
+        // directly so a dirty autosave is restored and no blank placeholder
+        // window is created.
+        if let documentID = DocumentSession.shared.documentID(forFileURL: url) {
+            if DocumentWindowTabbing.activate(documentID: documentID) {
+                recents.note(url: url)
+                didLaunchMap = true
+                DispatchQueue.main.async {
+                    dismiss()
+                }
+            } else {
+                launchMap(documentID)
+                // Let the restored ContentView consume the same URL so the
+                // recent is promoted and its last standalone frame is applied.
+                ExternalDocumentRouter.shared.receive(urls: [url])
+            }
+            return
+        }
         ExternalDocumentRouter.shared.receive(urls: [url])
         openPendingDocuments()
     }
@@ -872,8 +1606,17 @@ private struct ContentViewChrome: ViewModifier {
     let onExport: (BrainstormExportFormat) -> Void
     /// Close handler; receives the host window when available (red button / tab close).
     let onClose: (NSWindow?) -> Bool
+    let onPrepareForApplicationTermination:
+        () -> ApplicationTerminationPreparation
+    let onDiscardForApplicationTermination: () -> Void
     let onShowHelp: () -> Void
     let onExternalDocuments: () -> Void
+    let isPresentationActive: () -> Bool
+    let isNoteEditing: () -> Bool
+    let onPresent: () -> Void
+    let onExitPresentation: () -> Void
+    let onEditNote: () -> Void
+    let onCloseNote: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -885,6 +1628,10 @@ private struct ContentViewChrome: ViewModifier {
                     // Pass the exact sender so inactive tab/window close
                     // never falls back to a different key window.
                     shouldClose: { window in onClose(window) },
+                    prepareForApplicationTermination:
+                        onPrepareForApplicationTermination,
+                    discardUnsavedChangesForApplicationTermination:
+                        onDiscardForApplicationTermination,
                     onNewTab: onNewTab
                 )
             )
@@ -912,8 +1659,14 @@ private struct ContentViewChrome: ViewModifier {
                 onNew: onNew,
                 onNewTab: { onNewTab(nil) },
                 onExport: onExport,
-                onClose: { _ = onClose(nil) },
-                onExternalDocuments: onExternalDocuments
+                onClose: { _ = onClose(nil) }
+            ))
+            .modifier(ContentViewAuxiliaryNotifications(
+                store: store,
+                onExternalDocuments: onExternalDocuments,
+                onPresent: onPresent,
+                onExitPresentation: onExitPresentation,
+                onEditNote: onEditNote
             ))
             .navigationTitle(store.documentTitle)
             // App chrome always follows the macOS light/dark appearance.
@@ -938,7 +1691,10 @@ private struct ContentViewChrome: ViewModifier {
             onNew: onNew,
             onNewTab: { onNewTab(nil) },
             onClose: { _ = onClose(nil) },
-            onShowHelp: onShowHelp
+            onShowHelp: onShowHelp,
+            isPresentationActive: isPresentationActive,
+            isNoteEditing: isNoteEditing,
+            onCloseNote: onCloseNote
         )
     }
 }
@@ -972,6 +1728,9 @@ private struct ContentViewLifecycle: ViewModifier {
             .onChange(of: store.editingDraft) { _, _ in
                 onAutosave(false)
             }
+            .onChange(of: store.noteEpoch) { _, _ in
+                onAutosave(false)
+            }
             // historyEpoch advances only after a completed undoable action
             // (including undo/redo), so persist immediately without writing
             // once per live drag frame or title keystroke.
@@ -994,7 +1753,6 @@ private struct ContentViewNotifications: ViewModifier {
     let onNewTab: () -> Void
     let onExport: (BrainstormExportFormat) -> Void
     let onClose: () -> Void
-    let onExternalDocuments: () -> Void
     @Environment(\.controlActiveState) private var controlActiveState
 
     func body(content: Content) -> some View {
@@ -1048,6 +1806,10 @@ private struct ContentViewNotifications: ViewModifier {
                 guard isKeyWindow else { return }
                 onSave(true)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .brainstormExportHTML)) { _ in
+                guard isKeyWindow else { return }
+                onExport(.html)
+            }
             .onReceive(NotificationCenter.default.publisher(for: .brainstormExportPNG)) { _ in
                 guard isKeyWindow else { return }
                 onExport(.png)
@@ -1059,6 +1821,44 @@ private struct ContentViewNotifications: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .brainstormClose)) { _ in
                 guard isKeyWindow else { return }
                 onClose()
+            }
+    }
+
+    /// Only the frontmost map window should handle File / Edit menu posts.
+    private var isKeyWindow: Bool {
+        if let window = DocumentWindowTabbing.window(for: store.documentID) {
+            return DocumentWindowTabbing.isCommandTarget(window)
+        }
+        // The hosting-window bridge can be one SwiftUI update behind during
+        // initial scene creation, so retain the environment value as fallback.
+        return controlActiveState == .key
+    }
+}
+
+/// Presentation and external-document posts are kept separate from the large
+/// File/Edit notification chain so Swift's view type checker has a bounded
+/// expression to infer.
+private struct ContentViewAuxiliaryNotifications: ViewModifier {
+    let store: BrainstormStore
+    let onExternalDocuments: () -> Void
+    let onPresent: () -> Void
+    let onExitPresentation: () -> Void
+    let onEditNote: () -> Void
+    @Environment(\.controlActiveState) private var controlActiveState
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .brainstormPresent)) { _ in
+                guard isKeyWindow else { return }
+                onPresent()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .brainstormExitPresentation)) { _ in
+                guard isKeyWindow else { return }
+                onExitPresentation()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .brainstormEditNote)) { _ in
+                guard isKeyWindow else { return }
+                onEditNote()
             }
             .onReceive(NotificationCenter.default.publisher(for: .brainstormExternalDocumentsAvailable)) { _ in
                 // Prefer key window; if none is key yet, any window may drain pending.
@@ -1097,6 +1897,9 @@ struct WindowChromeBridge: NSViewRepresentable {
     var isDocumentEdited: Bool
     /// Receives the exact window that should close (red button / tab).
     var shouldClose: (NSWindow) -> Bool
+    var prepareForApplicationTermination:
+        () -> ApplicationTerminationPreparation
+    var discardUnsavedChangesForApplicationTermination: () -> Void
     var onNewTab: (NSWindow?) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -1104,6 +1907,10 @@ struct WindowChromeBridge: NSViewRepresentable {
             documentID: documentID,
             isDocumentEdited: isDocumentEdited,
             shouldClose: shouldClose,
+            prepareForApplicationTermination:
+                prepareForApplicationTermination,
+            discardUnsavedChangesForApplicationTermination:
+                discardUnsavedChangesForApplicationTermination,
             onNewTab: onNewTab
         )
     }
@@ -1124,6 +1931,10 @@ struct WindowChromeBridge: NSViewRepresentable {
         context.coordinator.documentID = documentID
         context.coordinator.isDocumentEdited = isDocumentEdited
         context.coordinator.shouldClose = shouldClose
+        context.coordinator.prepareTermination =
+            prepareForApplicationTermination
+        context.coordinator.commitTerminationDiscard =
+            discardUnsavedChangesForApplicationTermination
         context.coordinator.onNewTab = onNewTab
         context.coordinator.attach(to: nsView.window)
     }
@@ -1137,10 +1948,17 @@ struct WindowChromeBridge: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSResponder, NSWindowDelegate {
+    final class Coordinator:
+        NSResponder,
+        NSWindowDelegate,
+        ApplicationTerminationParticipant
+    {
         var documentID: UUID
         var isDocumentEdited: Bool
         var shouldClose: (NSWindow) -> Bool
+        var prepareTermination:
+            () -> ApplicationTerminationPreparation
+        var commitTerminationDiscard: () -> Void
         var onNewTab: (NSWindow?) -> Void
         weak var window: NSWindow?
         nonisolated(unsafe) weak var forwardedDelegate: (any NSWindowDelegate)?
@@ -1151,11 +1969,21 @@ struct WindowChromeBridge: NSViewRepresentable {
             documentID: UUID,
             isDocumentEdited: Bool,
             shouldClose: @escaping (NSWindow) -> Bool,
+            prepareForApplicationTermination:
+                @escaping () -> ApplicationTerminationPreparation = {
+                    .proceed
+                },
+            discardUnsavedChangesForApplicationTermination:
+                @escaping () -> Void = {},
             onNewTab: @escaping (NSWindow?) -> Void
         ) {
             self.documentID = documentID
             self.isDocumentEdited = isDocumentEdited
             self.shouldClose = shouldClose
+            self.prepareTermination =
+                prepareForApplicationTermination
+            self.commitTerminationDiscard =
+                discardUnsavedChangesForApplicationTermination
             self.onNewTab = onNewTab
             super.init()
         }
@@ -1251,6 +2079,32 @@ struct WindowChromeBridge: NSViewRepresentable {
             forwardedDelegate?.windowDidBecomeKey?(notification)
         }
 
+        func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+            NotificationCenter.default.post(
+                name: .brainstormWindowDidFailToEnterFullScreen,
+                object: window
+            )
+            forwardedDelegate?.windowDidFailToEnterFullScreen?(window)
+        }
+
+        func windowDidFailToExitFullScreen(_ window: NSWindow) {
+            NotificationCenter.default.post(
+                name: .brainstormWindowDidFailToExitFullScreen,
+                object: window
+            )
+            forwardedDelegate?.windowDidFailToExitFullScreen?(window)
+        }
+
+        func prepareForApplicationTermination()
+            -> ApplicationTerminationPreparation
+        {
+            prepareTermination()
+        }
+
+        func discardUnsavedChangesForApplicationTermination() {
+            commitTerminationDiscard()
+        }
+
         /// Tab bar “+” button — open a new document tab in this window’s group.
         @objc(newWindowForTab:)
         override func newWindowForTab(_ sender: Any?) {
@@ -1297,6 +2151,8 @@ enum BrainstormNodeShortcuts {
     Edit: Space to extend · type a letter to replace · ⌃←→ move by words · ⌃↑↓ disabled · ⌘↩ rename/done · Esc cancels
     Structure: ⌘↑↓ reorder · ⌘←→ change depth (outside title editing)
     Create: Tab child · Return sibling · ? for full list
+    Notes: turn on Notes, then use + Note on a node · ⌥⌘N always opens/closes the selected note
+    Present: ⌥⌘↩ start · arrows/Space move · Home/End jump · Esc exits
     Documents: ⌘T new tab · ⌘N new window · ⌘W close
     """
 }
@@ -1313,8 +2169,16 @@ public extension Notification.Name {
     static let brainstormOpenRecent = Notification.Name("BrainstormFeature.openRecent")
     static let brainstormSave = Notification.Name("BrainstormFeature.save")
     static let brainstormSaveAs = Notification.Name("BrainstormFeature.saveAs")
+    static let brainstormExportHTML = Notification.Name("BrainstormFeature.exportHTML")
     static let brainstormExportPNG = Notification.Name("BrainstormFeature.exportPNG")
     static let brainstormExportPDF = Notification.Name("BrainstormFeature.exportPDF")
+    static let brainstormPresent = Notification.Name("BrainstormFeature.present")
+    static let brainstormExitPresentation = Notification.Name("BrainstormFeature.exitPresentation")
+    static let brainstormWindowDidFailToEnterFullScreen =
+        Notification.Name("BrainstormFeature.windowDidFailToEnterFullScreen")
+    static let brainstormWindowDidFailToExitFullScreen =
+        Notification.Name("BrainstormFeature.windowDidFailToExitFullScreen")
+    static let brainstormEditNote = Notification.Name("BrainstormFeature.editNote")
     static let brainstormClose = Notification.Name("BrainstormFeature.close")
     /// Finder / Launch Services delivered one or more document URLs.
     static let brainstormExternalDocumentsAvailable = Notification.Name("BrainstormFeature.externalDocumentsAvailable")
@@ -1433,11 +2297,18 @@ private struct SearchFieldChrome: View {
 
 private struct KeyboardStatusBar: View {
     let isEditing: Bool
+    let isEditingNote: Bool
     let onShowHelp: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
-            if isEditing {
+            if isEditingNote {
+                Label("Editing note", systemImage: "note.text")
+                    .foregroundStyle(.secondary)
+                StatusHint(key: "⌥⌘N", label: "done")
+                StatusHint(key: "⌘Z", label: "undo")
+                StatusHint(key: "⌘S", label: "save")
+            } else if isEditing {
                 Label("Editing", systemImage: "character.cursor.ibeam")
                     .foregroundStyle(.secondary)
                 StatusHint(key: "←→", label: "caret")
@@ -1450,6 +2321,7 @@ private struct KeyboardStatusBar: View {
                 StatusHint(key: "Space", label: "edit")
                 StatusHint(key: "type", label: "replace")
                 StatusHint(key: "↑↓←→", label: "nav")
+                StatusHint(key: "⌥⌘N", label: "note")
                 StatusHint(key: "⇧⌘F", label: "focus")
             }
             Spacer(minLength: 8)
@@ -1525,7 +2397,14 @@ private struct KeyboardHelpSheet: View {
                         shortcutRow("⇧↩", "New main topic (when not editing)")
                     }
 
-                    helpSection("5. Style, zoom, focus") {
+                    helpSection("5. Add or edit a note") {
+                        shortcutRow("Notes → + Note", "Turn on the Notes layer, then open the centered editor")
+                        shortcutRow("⌥⌘N", "Open or close the selected node’s note")
+                        shortcutRow("paste a URL", "Keep links visible; YouTube plays inline when the note is viewed")
+                        shortcutRow("Tab / ↩", "Still create child / sibling nodes when the note editor is closed")
+                    }
+
+                    helpSection("6. Style, zoom, focus") {
                         shortcutRow("Theme", "Map palette — System (macOS light/dark), Dark+, One Dark, …")
                         shortcutRow("Inspector", "Map theme, fill, shape, font, branch, emoji, image")
                         shortcutRow("⇧-click", "Add/remove nodes from selection; inspector styles all selected nodes")
@@ -1541,18 +2420,18 @@ private struct KeyboardHelpSheet: View {
                         shortcutRow("⇧⌘F", "Focus mode — keep branch + same-level peers (not their kids)")
                     }
 
-                    helpSection("6. Documents & windows") {
+                    helpSection("7. Documents & windows") {
                         shortcutRow("⌘T", "New map as a tab in this window")
                         shortcutRow("⌘N", "New map in a separate window")
                         shortcutRow("⌘W", "Close current tab / window (asks to save)")
-                        shortcutRow("Export", "Save the complete map as PNG, PDF, Markdown, Mermaid, or PlantUML")
+                        shortcutRow("Export", "Save the complete map as an HTML viewer, PNG, PDF, Markdown, Mermaid, or PlantUML")
                         shortcutRow("drag tab", "Pull a tab out into its own window")
                         Text("Use Window → Show Tab Bar if the tab strip is hidden. Window → Merge All Windows recombines open maps.")
                             .foregroundStyle(.secondary)
                             .font(.callout)
                     }
 
-                    helpSection("7. Other useful keys") {
+                    helpSection("8. Other useful keys") {
                         shortcutRow("⌥.", "Fold / unfold branch")
                         shortcutRow("⌫", "Delete node and its children")
                         shortcutRow("⌘Z / ⌘⇧Z", "Undo / redo")
@@ -1807,7 +2686,7 @@ enum BrainstormKeyRouter {
             case "o":
                 fileActions?.open()
                 return fileActions != nil
-            case "n":
+            case "n" where !opt && !ctrl && !shift:
                 fileActions?.new()
                 return fileActions != nil
             case "t" where !opt && !ctrl && !shift:
@@ -1913,6 +2792,9 @@ private struct KeyboardMonitor: NSViewRepresentable {
     var onNewTab: () -> Void
     var onClose: () -> Void
     var onShowHelp: () -> Void
+    var isPresentationActive: () -> Bool
+    var isNoteEditing: () -> Bool
+    var onCloseNote: () -> Void
 
     func makeNSView(context: Context) -> KeyCatcherView {
         let view = KeyCatcherView()
@@ -1925,6 +2807,9 @@ private struct KeyboardMonitor: NSViewRepresentable {
         view.onNewTab = onNewTab
         view.onClose = onClose
         view.onShowHelp = onShowHelp
+        view.isPresentationActive = isPresentationActive
+        view.isNoteEditing = isNoteEditing
+        view.onCloseNote = onCloseNote
         return view
     }
 
@@ -1938,6 +2823,9 @@ private struct KeyboardMonitor: NSViewRepresentable {
         nsView.onNewTab = onNewTab
         nsView.onClose = onClose
         nsView.onShowHelp = onShowHelp
+        nsView.isPresentationActive = isPresentationActive
+        nsView.isNoteEditing = isNoteEditing
+        nsView.onCloseNote = onCloseNote
     }
 }
 
@@ -1951,6 +2839,9 @@ final class KeyCatcherView: NSView {
     var onNewTab: (() -> Void)?
     var onClose: (() -> Void)?
     var onShowHelp: (() -> Void)?
+    var isPresentationActive: (() -> Bool)?
+    var isNoteEditing: (() -> Bool)?
+    var onCloseNote: (() -> Void)?
     nonisolated(unsafe) private var monitor: Any?
 
     // Local monitor only — must not steal first responder from the title field.
@@ -1998,6 +2889,9 @@ final class KeyCatcherView: NSView {
 
         // Don't steal keys from system panels / other app windows.
         guard event.window == window || event.window == nil else { return false }
+        // Presentation installs its own focused navigation monitor. Returning
+        // the event here lets that surface own arrows, paging, Space, and Esc.
+        if isPresentationActive?() == true { return false }
 
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let cmd = flags.contains(.command)
@@ -2007,7 +2901,31 @@ final class KeyCatcherView: NSView {
         let chars = (event.charactersIgnoringModifiers ?? "").lowercased()
         let first = window?.firstResponder
         let inTextInput = Self.isTextInputResponder(first)
+        let inNoteEditor = first is NodeNoteTextView
         let searchFocused = isSearchFocused?() ?? false
+
+        // The foreground note workspace owns all plain keys. In particular,
+        // Return and Tab must never leak through to the canvas node-creation
+        // router while a note control (not only the text view) has focus.
+        if isNoteEditing?() == true {
+            if event.keyCode == 53, !cmd, !opt, !ctrl {
+                onCloseNote?()
+                return true
+            }
+            return false
+        }
+
+        // The note editor owns plain typing/navigation and AppKit's native
+        // selection/clipboard/undo commands. Other document-level commands
+        // (for example ⌘S) continue through the chrome shortcut handler.
+        if inNoteEditor {
+            if !cmd {
+                return false
+            }
+            if ["a", "c", "v", "x", "z"].contains(chars) {
+                return false
+            }
+        }
 
         // Toolbar search (or any non–node-title text field): never type-to-edit / Tab-add-child.
         // Node title edit sets store.isEditing — that path stays on the key router.

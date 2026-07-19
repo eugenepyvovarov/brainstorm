@@ -17,6 +17,31 @@ private final class TestWindowDelegate: NSObject, NSWindowDelegate {
     }
 }
 
+@MainActor
+private final class TestApplicationTerminationParticipant:
+    ApplicationTerminationParticipant
+{
+    let documentID = UUID()
+    let preparation: ApplicationTerminationPreparation
+    private(set) var preparationCount = 0
+    private(set) var discardCount = 0
+
+    init(_ preparation: ApplicationTerminationPreparation) {
+        self.preparation = preparation
+    }
+
+    func prepareForApplicationTermination()
+        -> ApplicationTerminationPreparation
+    {
+        preparationCount += 1
+        return preparation
+    }
+
+    func discardUnsavedChangesForApplicationTermination() {
+        discardCount += 1
+    }
+}
+
 @Suite("DocumentWindowTabbing", .serialized)
 @MainActor
 struct DocumentWindowTabbingTests {
@@ -71,6 +96,25 @@ struct DocumentWindowTabbingTests {
         NSWindow.allowsAutomaticWindowTabbing = true
         DocumentWindowTabbing.configureApplicationTabbing()
         #expect(NSWindow.allowsAutomaticWindowTabbing == false)
+    }
+
+    @Test func activationDistinguishesDormantSessionIDFromLiveWindow() {
+        let documentID = UUID()
+        #expect(!DocumentWindowTabbing.activate(documentID: documentID))
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        DocumentWindowTabbing.configure(window, documentID: documentID)
+        defer {
+            window.orderOut(nil)
+            DocumentWindowTabbing.unregister(documentID: documentID, window: window)
+        }
+
+        #expect(DocumentWindowTabbing.activate(documentID: documentID))
     }
 
     @Test func coordinatorExportsNativeTabBarPlusSelector() {
@@ -132,6 +176,33 @@ struct DocumentWindowTabbingTests {
 
         #expect(!coordinator.windowShouldClose(NSWindow()))
         #expect(!appCloseHandlerCalled)
+    }
+
+    @Test func applicationTerminationCommitsDiscardsAfterEveryDocumentApproves() {
+        let clean = TestApplicationTerminationParticipant(.proceed)
+        let discard = TestApplicationTerminationParticipant(.discard)
+
+        #expect(ApplicationTerminationReview.shouldTerminate(
+            participants: [clean, discard]
+        ))
+        #expect(clean.preparationCount == 1)
+        #expect(discard.preparationCount == 1)
+        #expect(clean.discardCount == 0)
+        #expect(discard.discardCount == 1)
+    }
+
+    @Test func applicationTerminationCancelLeavesPendingDiscardsUntouched() {
+        let discard = TestApplicationTerminationParticipant(.discard)
+        let cancel = TestApplicationTerminationParticipant(.cancel)
+        let unreviewed = TestApplicationTerminationParticipant(.proceed)
+
+        #expect(!ApplicationTerminationReview.shouldTerminate(
+            participants: [discard, cancel, unreviewed]
+        ))
+        #expect(discard.preparationCount == 1)
+        #expect(cancel.preparationCount == 1)
+        #expect(unreviewed.preparationCount == 0)
+        #expect(discard.discardCount == 0)
     }
 
     @Test func onlySelectedKeyNativeTabReceivesSharedCommands() {
@@ -267,13 +338,16 @@ struct BrainstormStoreTests {
         let preferences = BrainstormUIPreferences(defaults: defaults)
         #expect(preferences.showInspector)
         #expect(!preferences.isFocusMode)
+        #expect(!preferences.showNotesLayer)
 
         preferences.showInspector = false
         preferences.isFocusMode = true
+        preferences.showNotesLayer = true
 
         let restored = BrainstormUIPreferences(defaults: defaults)
         #expect(!restored.showInspector)
         #expect(restored.isFocusMode)
+        #expect(restored.showNotesLayer)
 
         let store = BrainstormStore(startEditing: false, uiPreferences: restored)
         #expect(store.isFocusMode)
@@ -1489,6 +1563,468 @@ struct BrainstormExporterTests {
         try writeSampleIfRequested(data, named: "brainstorm-export.pdf")
     }
 
+    @Test func htmlExportIsSelfContainedVectorDOMAtLogicalSize() throws {
+        let root = vectorFixture
+        let data = try BrainstormExporter.data(
+            root: root,
+            theme: .vsCodeLight,
+            colorScheme: .light,
+            format: .html
+        )
+        let html = try #require(String(data: data, encoding: .utf8))
+        let layout = LayoutEngine().layout(root: root)
+
+        #expect(html.hasPrefix("<!doctype html>"))
+        #expect(html.contains("<meta charset=\"utf-8\">"))
+        #expect(html.contains("<script>"))
+        #expect(!html.contains("<script src="))
+        #expect(!html.contains("<link rel=\"stylesheet\""))
+        #expect(!html.contains("src=\"http"))
+        #expect(!html.contains("<canvas"))
+        #expect(!html.contains("id=\"mindmap\""))
+        #expect(!html.contains("<img"))
+
+        let attribution = try openingTag(
+            named: "a",
+            matchingAttribute: "id",
+            equalTo: "brainstorm-attribution",
+            in: html
+        )
+        #expect(
+            attribute(named: "href", in: attribution)
+                == "https://selfhosted.ninja/projects/brainstorm/"
+        )
+        #expect(attribute(named: "target", in: attribution) == "_blank")
+        #expect(attribute(named: "rel", in: attribution) == "noopener noreferrer")
+        #expect(attribute(named: "aria-label", in: attribution) == "Made with Brainstorm")
+        #expect(attribute(named: "title", in: attribution) == "Made with Brainstorm")
+        #expect(html.contains(#"class="brainstorm-attribution-logo""#))
+        #expect(html.contains(#"viewBox="0 0 1024 1024""#))
+        #expect(html.contains(#"id="brainstorm-attribution-rounded-icon""#))
+        #expect(html.contains(#"class="brainstorm-attribution-logo-tile""#))
+        #expect(html.contains(#"class="brainstorm-attribution-logo-branch""#))
+        #expect(html.contains(#"class="brainstorm-attribution-logo-node""#))
+        #expect(html.contains(#"fill: var(--accent);"#))
+        #expect(html.contains(#"stroke: var(--accent-contrast);"#))
+        #expect(html.contains("--accent-contrast:"))
+        #expect(html.contains(#"d="M410 512 L620 512""#))
+        #expect(html.contains(
+            #"<span class="visually-hidden">Made with Brainstorm</span>"#
+        ))
+        #expect(!html.contains(">Made with Brainstorm</a>"))
+        #expect(html.components(separatedBy: "id=\"brainstorm-attribution\"").count == 2)
+        let attributionRange = try #require(
+            html.range(of: "id=\"brainstorm-attribution\"")
+        )
+        let viewportRange = try #require(html.range(of: "id=\"viewport\""))
+        #expect(attributionRange.lowerBound < viewportRange.lowerBound)
+        #expect(html.contains("right: max(12px, env(safe-area-inset-right));"))
+        #expect(html.contains("bottom: max(12px, env(safe-area-inset-bottom));"))
+        #expect(html.contains(
+            "bottom: calc(max(12px, env(safe-area-inset-bottom)) + 7px);"
+        ))
+
+        let viewport = try openingTag(named: "main", in: html)
+        #expect(viewport.contains("id=\"viewport\""))
+        let mapWidthText = try #require(attribute(named: "data-map-width", in: viewport))
+        let mapHeightText = try #require(attribute(named: "data-map-height", in: viewport))
+        let mapWidth = try #require(Double(mapWidthText))
+        let mapHeight = try #require(Double(mapHeightText))
+        #expect(abs(mapWidth - Double(layout.contentSize.width)) < 0.01)
+        #expect(abs(mapHeight - Double(layout.contentSize.height)) < 0.01)
+
+        _ = try openingTag(named: "div", matchingAttribute: "id", equalTo: "stage", in: html)
+
+        let branches = try openingTag(named: "svg", matchingAttribute: "id", equalTo: "branches", in: html)
+        #expect(hasClass("edges", in: branches))
+        #expect(attribute(named: "viewBox", in: branches) ==
+            "0 0 \(svgNumber(layout.contentSize.width)) \(svgNumber(layout.contentSize.height))")
+
+        _ = try openingTag(named: "svg", matchingAttribute: "id", equalTo: "node-shapes", in: html)
+        _ = try openingTag(named: "section", matchingAttribute: "id", equalTo: "nodes", in: html)
+        let mapNodeArticles = openingTags(named: "article", in: html)
+            .filter { hasClass("node", in: $0) }
+        #expect(mapNodeArticles.count == layout.nodes.count)
+        #expect(html.contains("class=\"node-title\""))
+        try writeSampleIfRequested(data, named: "brainstorm-export.html")
+    }
+
+    @Test func htmlExportUsesExactLayoutGeometryAndBezierControls() throws {
+        let root = vectorFixture
+        let layout = LayoutEngine().layout(root: root)
+        let data = try BrainstormExporter.data(
+            root: root,
+            theme: .vsCodeLight,
+            colorScheme: .light,
+            format: .html
+        )
+        let html = try #require(String(data: data, encoding: .utf8))
+
+        for node in layout.nodes {
+            let article = try openingTag(
+                named: "article",
+                matchingAttribute: "data-node-id",
+                equalTo: node.id.uuidString,
+                in: html
+            )
+            #expect(attribute(named: "data-x", in: article) == svgNumber(node.frame.minX))
+            #expect(attribute(named: "data-y", in: article) == svgNumber(node.frame.minY))
+            #expect(attribute(named: "data-width", in: article) == svgNumber(node.frame.width))
+            #expect(attribute(named: "data-height", in: article) == svgNumber(node.frame.height))
+            #expect(attribute(named: "data-shape", in: article) == node.style.shape.rawValue)
+            #expect(attribute(named: "data-expanded", in: article) == String(node.isExpanded))
+            #expect(attribute(named: "data-child-count", in: article) == String(node.childCount))
+            let style = try #require(attribute(named: "style", in: article))
+            #expect(cssValue(named: "left", in: style) == "\(svgNumber(node.frame.minX))px")
+            #expect(cssValue(named: "top", in: style) == "\(svgNumber(node.frame.minY))px")
+            #expect(cssValue(named: "width", in: style) == "\(svgNumber(node.frame.width))px")
+            #expect(cssValue(named: "height", in: style) == "\(svgNumber(node.frame.height))px")
+        }
+
+        for edge in layout.edges {
+            let path = try openingTag(
+                named: "path",
+                matchingAttribute: "data-edge-from",
+                equalTo: edge.fromID.uuidString,
+                alsoMatchingAttribute: "data-edge-to",
+                equalTo: edge.toID.uuidString,
+                in: html
+            )
+            let midX = (edge.from.x + edge.to.x) / 2
+            let expectedPath = """
+            M \(svgNumber(edge.from.x)) \(svgNumber(edge.from.y)) \
+            C \(svgNumber(midX)) \(svgNumber(edge.from.y)) \
+            \(svgNumber(midX)) \(svgNumber(edge.to.y)) \
+            \(svgNumber(edge.to.x)) \(svgNumber(edge.to.y))
+            """
+            #expect(attribute(named: "d", in: path) == expectedPath)
+            // EdgeCanvas applies 90% opacity after resolving the branch override.
+            #expect(attribute(named: "stroke", in: path) == "rgba(19, 87, 155, 0.9)")
+            #expect(attribute(named: "stroke-width", in: path) == "2")
+            #expect(attribute(named: "stroke-linecap", in: path) == "round")
+        }
+    }
+
+    @Test func htmlExportUsesContinuousThemeGridOnViewport() throws {
+        let data = try BrainstormExporter.data(
+            root: vectorFixture,
+            theme: .vsCodeLight,
+            colorScheme: .light,
+            format: .html
+        )
+        let html = try #require(String(data: data, encoding: .utf8))
+        let viewport = try openingTag(named: "main", in: html)
+        let viewportStyle = try #require(attribute(named: "style", in: viewport))
+
+        #expect(attribute(named: "data-grid-step", in: viewport) == "32")
+        #expect(cssValue(named: "--canvas", in: viewportStyle) == "#FFFFFF")
+        #expect(cssValue(named: "--grid", in: viewportStyle) == "#E8E8E8")
+        #expect(html.contains("linear-gradient(to right, var(--grid)"))
+        #expect(html.contains("linear-gradient(to bottom, var(--grid)"))
+        #expect(html.contains("background-size: 32px 32px"))
+    }
+
+    @Test func htmlExportIncludesMobilePanPinchAndDoubleTapNavigation() throws {
+        let data = try BrainstormExporter.data(
+            root: vectorFixture,
+            theme: .vsCodeLight,
+            colorScheme: .light,
+            format: .html
+        )
+        let html = try #require(String(data: data, encoding: .utf8))
+        let viewport = try openingTag(named: "main", in: html)
+
+        #expect(html.contains(
+            #"<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">"#
+        ))
+        #expect(attribute(named: "data-touch-navigation", in: viewport) ==
+            "pan pinch double-tap-fit")
+        #expect(html.contains("touch-action: none"))
+        #expect(html.contains("overscroll-behavior: none"))
+        #expect(html.contains("const activePointers = new Map();"))
+        #expect(html.contains(#"event.pointerType !== "touch""#))
+        #expect(html.contains("activePointers.size >= 2"))
+        #expect(html.contains("applyPinch(previousGesture, currentGesture)"))
+        #expect(html.contains(#""lostpointercapture""#))
+        #expect(html.contains("window.visualViewport?.addEventListener"))
+        #expect(html.contains("Drag with a mouse or one finger to pan."))
+        #expect(html.contains("pinch with two fingers to zoom"))
+        #expect(html.contains("Double-click, double-tap, or press F to fit"))
+        #expect(!html.contains("let activePointer = null"))
+    }
+
+    @Test func htmlExportEscapesHostileMapAndNodeTitles() throws {
+        let hostileTitle = #"</title><script>globalThis.hostileTitleRan=true</script>& "quoted""#
+        let hostileNode = #"Node <& "quoted"></article><script>globalThis.hostileNodeRan=true</script>"#
+        var root = BrainstormNode.root(title: hostileTitle)
+        root.children = [BrainstormNode(title: hostileNode)]
+        let data = try BrainstormExporter.data(
+            root: root,
+            theme: .vsCodeLight,
+            colorScheme: .light,
+            format: .html
+        )
+        let html = try #require(String(data: data, encoding: .utf8))
+
+        #expect(!html.contains("</title><script>globalThis.hostileTitleRan=true</script>"))
+        #expect(!html.contains("</article><script>globalThis.hostileNodeRan=true</script>"))
+        #expect(html.contains(
+            "&lt;/title&gt;&lt;script&gt;globalThis.hostileTitleRan=true&lt;/script&gt;&amp; "
+                + "&quot;quoted&quot; — Brainstorm"
+        ))
+        #expect(html.contains(
+            "Node &lt;&amp; &quot;quoted&quot;&gt;&lt;/article&gt;&lt;script&gt;"
+                + "globalThis.hostileNodeRan=true&lt;/script&gt;"
+        ))
+    }
+
+    @Test func htmlExportEmbedsOnlyPerNodeMedia() throws {
+        let imageBase64 =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        let emojiID = UUID(uuidString: "50000000-0000-0000-0000-000000000001")!
+        let imageID = UUID(uuidString: "50000000-0000-0000-0000-000000000002")!
+        let stickerID = UUID(uuidString: "50000000-0000-0000-0000-000000000003")!
+        var root = BrainstormNode(
+            id: emojiID,
+            title: "Media",
+            media: NodeMedia(emoji: "🧠")
+        )
+        root.children = [
+            BrainstormNode(
+                id: imageID,
+                title: "Image",
+                media: NodeMedia(imageBase64: imageBase64)
+            ),
+            BrainstormNode(
+                id: stickerID,
+                title: "Sticker",
+                media: NodeMedia(sticker: "paperplane.fill")
+            ),
+        ]
+
+        let data = try BrainstormExporter.data(
+            root: root,
+            theme: .vsCodeLight,
+            colorScheme: .light,
+            format: .html
+        )
+        let html = try #require(String(data: data, encoding: .utf8))
+
+        let emojiNode = try element(
+            named: "article",
+            matchingAttribute: "data-node-id",
+            equalTo: emojiID.uuidString,
+            in: html
+        )
+        let imageNode = try element(
+            named: "article",
+            matchingAttribute: "data-node-id",
+            equalTo: imageID.uuidString,
+            in: html
+        )
+        let stickerNode = try element(
+            named: "article",
+            matchingAttribute: "data-node-id",
+            equalTo: stickerID.uuidString,
+            in: html
+        )
+
+        #expect(emojiNode.contains("class=\"node-media node-emoji\""))
+        #expect(emojiNode.contains("🧠"))
+
+        let image = try openingTag(named: "img", matchingClass: "node-image", in: String(imageNode))
+        #expect(attribute(named: "src", in: image) == "data:image/png;base64,\(imageBase64)")
+
+        let sticker = try openingTag(
+            named: "img",
+            matchingClass: "sticker-image",
+            in: String(stickerNode)
+        )
+        let stickerSource = try #require(attribute(named: "src", in: sticker))
+        #expect(stickerSource.hasPrefix("data:image/png;base64,"))
+        #expect(!stickerSource.hasSuffix(","))
+        #expect(openingTags(named: "img", in: html).count == 2)
+        #expect(!html.contains("id=\"mindmap\""))
+        #expect(!html.contains("<canvas"))
+    }
+
+    @Test func htmlMapOmitsCollapsedDescendantsButPresentationIncludesThem() throws {
+        let rootID = UUID(uuidString: "30000000-0000-0000-0000-000000000001")!
+        let childID = UUID(uuidString: "30000000-0000-0000-0000-000000000002")!
+        let hiddenID = UUID(uuidString: "30000000-0000-0000-0000-000000000003")!
+        let root = BrainstormNode(
+            id: rootID,
+            title: "Root",
+            children: [
+                BrainstormNode(
+                    id: childID,
+                    title: "Folded",
+                    isExpanded: false,
+                    children: [BrainstormNode(id: hiddenID, title: "Hidden")]
+                ),
+            ]
+        )
+        let layout = LayoutEngine().layout(root: root)
+        let data = try BrainstormExporter.data(
+            root: root,
+            theme: .vsCodeLight,
+            colorScheme: .light,
+            format: .html
+        )
+        let html = try #require(String(data: data, encoding: .utf8))
+        let expandedLayout = LayoutEngine().layout(
+            root: root,
+            placementPolicy: .allDescendants
+        )
+
+        #expect(layout.nodes.map(\.id) == [rootID, childID])
+        let mapNodeArticles = openingTags(named: "article", in: html)
+            .filter { hasClass("node", in: $0) }
+        #expect(mapNodeArticles.count == 2)
+        #expect(html.contains(rootID.uuidString))
+        #expect(html.contains(childID.uuidString))
+        #expect(!mapNodeArticles.contains {
+            attribute(named: "data-node-id", in: $0) == hiddenID.uuidString
+        })
+        let hiddenSlide = try openingTag(
+            named: "section",
+            matchingAttribute: "data-node-id",
+            equalTo: hiddenID.uuidString,
+            in: html
+        )
+        #expect(hasClass("presentation-slide", in: hiddenSlide))
+        #expect(html.contains(">Hidden</span>"))
+        let visibleEdgePaths = openingTags(named: "path", in: html).filter {
+            attribute(named: "data-edge-from", in: $0) != nil
+        }
+        #expect(
+            visibleEdgePaths.count
+                == layout.edges.count + expandedLayout.edges.count
+        )
+    }
+
+    @Test func htmlExportPreservesNodeShapesAndStyleOverrides() throws {
+        let nodeID = UUID(uuidString: "40000000-0000-0000-0000-000000000001")!
+        let roundedID = UUID(uuidString: "40000000-0000-0000-0000-000000000002")!
+        let capsuleID = UUID(uuidString: "40000000-0000-0000-0000-000000000003")!
+        let rectangleID = UUID(uuidString: "40000000-0000-0000-0000-000000000004")!
+        let style = NodeStyle(
+            fillHex: "#112233",
+            textHex: "#445566",
+            branchHex: "#AABBCC",
+            borderHex: "#778899",
+            borderWidth: 3,
+            shape: .diamond,
+            fontSize: 19,
+            isBold: true,
+            isItalic: true
+        )
+        let root = BrainstormNode(
+            id: nodeID,
+            title: "Styled",
+            children: [
+                BrainstormNode(
+                    id: roundedID,
+                    title: "Rounded",
+                    style: NodeStyle(shape: .roundedRect)
+                ),
+                BrainstormNode(
+                    id: capsuleID,
+                    title: "Capsule",
+                    style: NodeStyle(shape: .capsule)
+                ),
+                BrainstormNode(
+                    id: rectangleID,
+                    title: "Rectangle",
+                    style: NodeStyle(shape: .rectangle)
+                ),
+            ],
+            style: style
+        )
+        let data = try BrainstormExporter.data(
+            root: root,
+            theme: .vsCodeLight,
+            colorScheme: .light,
+            format: .html
+        )
+        let html = try #require(String(data: data, encoding: .utf8))
+
+        let article = try openingTag(
+            named: "article",
+            matchingAttribute: "data-node-id",
+            equalTo: nodeID.uuidString,
+            in: html
+        )
+        let articleStyle = try #require(attribute(named: "style", in: article))
+        #expect(hasClass("node", in: article))
+        #expect(hasClass("shape-diamond", in: article))
+        #expect(attribute(named: "data-shape", in: article) == "diamond")
+        #expect(cssValue(named: "--node-fill", in: articleStyle) == "#112233")
+        #expect(cssValue(named: "--node-text", in: articleStyle) == "#445566")
+        #expect(cssValue(named: "--node-border", in: articleStyle) == "#778899")
+        #expect(cssValue(named: "--node-border-width", in: articleStyle) == "3px")
+        #expect(cssValue(named: "--node-font-size", in: articleStyle) == "19px")
+        #expect(cssValue(named: "--node-font-weight", in: articleStyle) == "600")
+        #expect(cssValue(named: "--node-font-style", in: articleStyle) == "italic")
+
+        let shapePath = try openingTag(
+            named: "path",
+            matchingAttribute: "data-node-id",
+            equalTo: nodeID.uuidString,
+            in: html
+        )
+        #expect(attribute(named: "data-shape", in: shapePath) == "diamond")
+        #expect(attribute(named: "fill", in: shapePath) == "#112233")
+        #expect(attribute(named: "stroke", in: shapePath) == "#778899")
+        #expect(attribute(named: "stroke-width", in: shapePath) == "3")
+
+        let expectedShapes: [(UUID, NodeShape)] = [
+            (nodeID, .diamond),
+            (roundedID, .roundedRect),
+            (capsuleID, .capsule),
+            (rectangleID, .rectangle),
+        ]
+        for (id, shape) in expectedShapes {
+            let node = try openingTag(
+                named: "article",
+                matchingAttribute: "data-node-id",
+                equalTo: id.uuidString,
+                in: html
+            )
+            #expect(attribute(named: "data-shape", in: node) == shape.rawValue)
+            #expect(hasClass("shape-\(shape.rawValue)", in: node))
+
+            let primitive = try openingTag(
+                named: "path",
+                matchingAttribute: "data-node-id",
+                equalTo: id.uuidString,
+                in: html
+            )
+            #expect(attribute(named: "data-shape", in: primitive) == shape.rawValue)
+            #expect(!(attribute(named: "d", in: primitive) ?? "").isEmpty)
+        }
+    }
+
+    private var vectorFixture: BrainstormNode {
+        BrainstormNode(
+            id: UUID(uuidString: "20000000-0000-0000-0000-000000000001")!,
+            title: "Vector Map",
+            children: [
+                BrainstormNode(
+                    id: UUID(uuidString: "20000000-0000-0000-0000-000000000002")!,
+                    title: "First"
+                ),
+                BrainstormNode(
+                    id: UUID(uuidString: "20000000-0000-0000-0000-000000000003")!,
+                    title: "Second",
+                    offsetX: 17,
+                    offsetY: 9
+                ),
+            ],
+            style: NodeStyle(branchHex: "#13579B")
+        )
+    }
+
     private var sampleMap: BrainstormNode {
         var research = BrainstormNode(
             title: "Research",
@@ -1525,6 +2061,129 @@ struct BrainstormExporterTests {
             children: [research, launch],
             style: NodeStyle(fontSize: 20, isBold: true)
         )
+    }
+
+    private func openingTag(named name: String, in html: String) throws -> Substring {
+        try #require(openingTags(named: name, in: html).first)
+    }
+
+    private func openingTag(
+        named name: String,
+        matchingAttribute attributeName: String,
+        equalTo expectedValue: String,
+        in html: String
+    ) throws -> Substring {
+        try #require(openingTags(named: name, in: html).first {
+            attribute(named: attributeName, in: $0) == expectedValue
+        })
+    }
+
+    private func openingTag(
+        named name: String,
+        matchingAttribute firstAttributeName: String,
+        equalTo firstExpectedValue: String,
+        alsoMatchingAttribute secondAttributeName: String,
+        equalTo secondExpectedValue: String,
+        in html: String
+    ) throws -> Substring {
+        try #require(openingTags(named: name, in: html).first {
+            attribute(named: firstAttributeName, in: $0) == firstExpectedValue
+                && attribute(named: secondAttributeName, in: $0) == secondExpectedValue
+        })
+    }
+
+    private func openingTag(
+        named name: String,
+        matchingClass className: String,
+        in html: String
+    ) throws -> Substring {
+        try #require(openingTags(named: name, in: html).first {
+            hasClass(className, in: $0)
+        })
+    }
+
+    private func element(
+        named name: String,
+        matchingAttribute attributeName: String,
+        equalTo expectedValue: String,
+        in html: String
+    ) throws -> Substring {
+        let openingTag = try openingTag(
+            named: name,
+            matchingAttribute: attributeName,
+            equalTo: expectedValue,
+            in: html
+        )
+        let openingRange = try #require(html.range(of: String(openingTag)))
+        let closingNeedle = "</\(name)>"
+        let closingRange = try #require(html.range(
+            of: closingNeedle,
+            range: openingRange.upperBound..<html.endIndex
+        ))
+        return html[openingRange.lowerBound..<closingRange.upperBound]
+    }
+
+    private func openingTags(named name: String, in html: String) -> [Substring] {
+        let needle = "<\(name)"
+        var tags: [Substring] = []
+        var searchStart = html.startIndex
+
+        while let start = html.range(
+            of: needle,
+            range: searchStart..<html.endIndex
+        ) {
+            let nameEnd = start.upperBound
+            guard nameEnd == html.endIndex
+                    || html[nameEnd] == ">"
+                    || html[nameEnd].isWhitespace
+            else {
+                searchStart = nameEnd
+                continue
+            }
+            let remainder = html[start.lowerBound...]
+            guard let end = remainder.firstIndex(of: ">") else {
+                break
+            }
+            tags.append(remainder[...end])
+            searchStart = html.index(after: end)
+        }
+        return tags
+    }
+
+    private func attribute(named name: String, in tag: Substring) -> String? {
+        let prefix = "\(name)=\""
+        guard let start = tag.range(of: prefix) else {
+            return nil
+        }
+        let valueStart = start.upperBound
+        guard let valueEnd = tag[valueStart...].firstIndex(of: "\"") else {
+            return nil
+        }
+        return String(tag[valueStart..<valueEnd])
+    }
+
+    private func hasClass(_ className: String, in tag: Substring) -> Bool {
+        attribute(named: "class", in: tag)?
+            .split(whereSeparator: \.isWhitespace)
+            .contains(Substring(className)) == true
+    }
+
+    private func cssValue(named name: String, in style: String) -> String? {
+        for declaration in style.split(separator: ";") {
+            let parts = declaration.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2,
+                  parts[0].trimmingCharacters(in: .whitespacesAndNewlines) == name
+            else {
+                continue
+            }
+            return parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
+    }
+
+    private func svgNumber(_ value: CGFloat) -> String {
+        String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), value)
+            .replacingOccurrences(of: #"\.?0+$"#, with: "", options: .regularExpression)
     }
 
     private func writeSampleIfRequested(_ data: Data, named fileName: String) throws {
@@ -2343,6 +3002,74 @@ struct DocumentSessionTests {
         #expect(payload.fileURL == nil)
     }
 
+    @Test func quitDiscardRestoresSavedBytesAndKeepsSavedDocumentRestorable() throws {
+        let (session, dir) = try tempSession()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let savedURL = dir.appendingPathComponent("Saved Map.bs")
+        let savedFile = BrainstormFile(
+            root: .root(title: "Last saved title"),
+            themeID: AppTheme.dracula.id
+        )
+        try BrainstormCodec.save(savedFile, to: savedURL)
+
+        let descriptor = session.registerNewDocument(displayName: "Saved Map")
+        session.updateFileURL(descriptor.id, url: savedURL)
+        try session.writeAutosave(
+            file: BrainstormFile(root: .root(title: "Discard me")),
+            for: descriptor.id
+        )
+        session.updateDirtyState(
+            id: descriptor.id,
+            isDirty: true,
+            contentRevision: 3,
+            savedRevision: 1
+        )
+
+        session.discardUnsavedChangesForTermination(descriptor.id)
+
+        let cleanDescriptor = try #require(
+            session.descriptor(for: descriptor.id)
+        )
+        #expect(!cleanDescriptor.isDirty)
+        #expect(
+            cleanDescriptor.contentRevision
+                == cleanDescriptor.savedRevision
+        )
+        let restored = session.restorePayload(for: descriptor.id)
+        #expect(restored.root.title == "Last saved title")
+        #expect(restored.themeID == AppTheme.dracula.id)
+        #expect(!restored.isDirty)
+        #expect(
+            restored.fileURL?.standardizedFileURL
+                .resolvingSymlinksInPath().path
+                == savedURL.standardizedFileURL
+                    .resolvingSymlinksInPath().path
+        )
+    }
+
+    @Test func quitDiscardRemovesDirtyUntitledRecoveryDocument() throws {
+        let (session, dir) = try tempSession()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let descriptor = session.registerNewDocument()
+        try session.writeAutosave(
+            file: BrainstormFile(root: .root(title: "Unsaved work")),
+            for: descriptor.id
+        )
+        session.updateDirtyState(
+            id: descriptor.id,
+            isDirty: true,
+            contentRevision: 1,
+            savedRevision: 0
+        )
+
+        session.discardUnsavedChangesForTermination(descriptor.id)
+
+        #expect(session.descriptor(for: descriptor.id) == nil)
+        #expect(session.launchRestorableDocumentID() == nil)
+    }
+
     @Test func freshUntitledRestoreIsNotDirty() throws {
         let (session, dir) = try tempSession()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -2519,6 +3246,9 @@ struct BrainstormTextExporterTests {
     }
 
     @Test func textFormatsUseExpectedFileExtensions() {
+        #expect(BrainstormExportFormat.html.fileExtension == "html")
+        #expect(BrainstormExportFormat.html.contentType == .html)
+        #expect(BrainstormExportFormat.html.displayName == "HTML")
         #expect(BrainstormExportFormat.markdown.fileExtension == "md")
         #expect(BrainstormExportFormat.mermaid.fileExtension == "mmd")
         #expect(BrainstormExportFormat.plantuml.fileExtension == "puml")
@@ -2526,12 +3256,171 @@ struct BrainstormTextExporterTests {
 
     @Test func exportMenuUsesPlainAlphabeticalTitles() {
         #expect(BrainstormExportFormat.menuCases.map(\.menuTitle) == [
+            "HTML Viewer",
             "Markdown Outline",
             "Mermaid Mindmap",
             "PDF Document",
             "PlantUML Mindmap",
             "PNG Image",
         ])
+    }
+}
+
+@Suite("Presentation sequence")
+struct PresentationSequenceTests {
+    @Test func walksEveryBranchDepthFirstInStoredSiblingOrder() {
+        let firstLeaf = BrainstormNode(title: "First leaf")
+        let deepLeaf = BrainstormNode(title: "Deep leaf")
+        let collapsed = BrainstormNode(
+            title: "Collapsed branch",
+            isExpanded: false,
+            children: [deepLeaf]
+        )
+        let secondLeaf = BrainstormNode(title: "Second leaf")
+        let firstBranch = BrainstormNode(
+            title: "First branch",
+            children: [firstLeaf, collapsed]
+        )
+        let secondBranch = BrainstormNode(
+            title: "Second branch",
+            children: [secondLeaf]
+        )
+        let root = BrainstormNode(
+            title: "Root",
+            children: [firstBranch, secondBranch]
+        )
+
+        let sequence = PresentationSequence(root: root)
+
+        #expect(sequence.items.map(\.node.title) == [
+            "Root",
+            "First branch",
+            "First leaf",
+            "Collapsed branch",
+            "Deep leaf",
+            "Second branch",
+            "Second leaf",
+        ])
+        #expect(sequence.items.map(\.depth) == [0, 1, 2, 2, 3, 1, 2])
+        #expect(sequence.index(of: deepLeaf.id) == 4)
+        #expect(sequence[4].ancestorIDs == [
+            root.id,
+            firstBranch.id,
+            collapsed.id,
+        ])
+        #expect(sequence[4].pathIDs == [
+            root.id,
+            firstBranch.id,
+            collapsed.id,
+            deepLeaf.id,
+        ])
+    }
+
+    @Test func classifiesParentsChildrenSiblingsAndCrossBranchJumps() {
+        let firstLeaf = BrainstormNode(title: "First leaf")
+        let firstBranch = BrainstormNode(
+            title: "First branch",
+            children: [firstLeaf]
+        )
+        let secondLeaf = BrainstormNode(title: "Second leaf")
+        let secondBranch = BrainstormNode(
+            title: "Second branch",
+            children: [secondLeaf]
+        )
+        let root = BrainstormNode(
+            title: "Root",
+            children: [firstBranch, secondBranch]
+        )
+        let sequence = PresentationSequence(root: root)
+
+        #expect(sequence.relationship(
+            from: root.id,
+            to: firstBranch.id
+        ) == .child(levels: 1))
+        #expect(sequence.relationship(
+            from: root.id,
+            to: firstLeaf.id
+        ) == .child(levels: 2))
+        #expect(sequence.relationship(
+            from: firstLeaf.id,
+            to: root.id
+        ) == .parent(levels: 2))
+        #expect(sequence.relationship(
+            from: firstBranch.id,
+            to: secondBranch.id
+        ) == .sibling(parentID: root.id))
+        #expect(sequence.relationship(
+            from: firstLeaf.id,
+            to: secondBranch.id
+        ) == .branchJump(
+            lowestCommonAncestorID: root.id,
+            ascendingLevels: 2,
+            descendingLevels: 1
+        ))
+        #expect(sequence.relationship(
+            from: firstLeaf.id,
+            to: secondLeaf.id
+        ) == .branchJump(
+            lowestCommonAncestorID: root.id,
+            ascendingLevels: 2,
+            descendingLevels: 2
+        ))
+        let branchJump = sequence.relationship(
+            from: firstLeaf.id,
+            to: secondBranch.id
+        )
+        #expect(
+            branchJump?.connectorLabel
+                == "Branch · 2 levels up · one level down"
+        )
+        #expect(
+            branchJump?.accessibilityDescription
+                == "another branch, 2 levels up and one level down"
+        )
+        #expect(sequence.relationship(from: -1, to: 0) == nil)
+        #expect(sequence.relationship(from: 0, to: 0) == nil)
+        #expect(sequence.relationship(from: UUID(), to: root.id) == nil)
+    }
+
+    @Test func branchJumpUsesTheDeepestSharedAncestor() {
+        let leftLeaf = BrainstormNode(title: "Left leaf")
+        let leftBranch = BrainstormNode(
+            title: "Left branch",
+            children: [leftLeaf]
+        )
+        let rightLeaf = BrainstormNode(title: "Right leaf")
+        let rightBranch = BrainstormNode(
+            title: "Right branch",
+            children: [rightLeaf]
+        )
+        let cluster = BrainstormNode(
+            title: "Cluster",
+            children: [leftBranch, rightBranch]
+        )
+        let root = BrainstormNode(title: "Root", children: [cluster])
+        let sequence = PresentationSequence(root: root)
+
+        #expect(sequence.relationship(
+            from: leftLeaf.id,
+            to: rightLeaf.id
+        ) == .branchJump(
+            lowestCommonAncestorID: cluster.id,
+            ascendingLevels: 2,
+            descendingLevels: 2
+        ))
+    }
+
+    @Test func singleRootStillProducesOnePresentationStep() {
+        let root = BrainstormNode.root(title: "Only idea")
+        let sequence = PresentationSequence(root: root)
+
+        #expect(sequence.count == 1)
+        #expect(sequence[0].id == root.id)
+        #expect(sequence[0].parentID == nil)
+        #expect(sequence[0].ancestorIDs.isEmpty)
+        #expect(sequence[0].pathIDs == [root.id])
+        #expect(sequence[0].depth == 0)
+        #expect(sequence[0].siblingIndex == 0)
     }
 }
 

@@ -60,7 +60,25 @@ public struct RecentDocumentEntry: Codable, Identifiable, Hashable, Sendable {
 @Observable
 @MainActor
 public final class RecentDocuments {
-    public static let shared = RecentDocuments()
+    public static let shared: RecentDocuments = {
+        // UI tests must never read or mutate the user's real recent maps.
+        // Keep this beside the isolated DocumentSession data so tests can seed
+        // both sides of a relaunch/recovery scenario before the app starts.
+        if let sessionID = ProcessInfo.processInfo.environment["BRAINSTORM_UI_TEST_SESSION_ID"],
+           !sessionID.isEmpty
+        {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("BrainstormUITests-\(sessionID)", isDirectory: true)
+            let recents = RecentDocuments(
+                storageURL: directory.appendingPathComponent("recents.json")
+            )
+            #if DEBUG
+            recents.seedDormantUITestRecentIfRequested(in: directory)
+            #endif
+            return recents
+        }
+        return RecentDocuments()
+    }()
 
     public private(set) var items: [RecentDocumentEntry] = []
 
@@ -209,6 +227,49 @@ public final class RecentDocuments {
     public func entry(id: String) -> RecentDocumentEntry? {
         items.first { $0.id == id }
     }
+
+    #if DEBUG
+    /// XCUITest runners and the sandboxed app cannot write into each other's
+    /// containers. Seed this narrowly-scoped recovery fixture inside the app
+    /// process when the UI test explicitly requests it.
+    private func seedDormantUITestRecentIfRequested(in directory: URL) {
+        let environment = ProcessInfo.processInfo.environment
+        guard let title = environment["BRAINSTORM_UI_TEST_DORMANT_RECENT_TITLE"],
+              !title.isEmpty
+        else { return }
+
+        let childTitle = environment["BRAINSTORM_UI_TEST_DORMANT_RECENT_CHILD"]
+            ?? "Recovered child fixture"
+        var root = BrainstormNode.root(title: title)
+        root.children = [BrainstormNode(title: childTitle)]
+        let file = BrainstormFile(root: root)
+        let url = directory.appendingPathComponent(title).appendingPathExtension("bs")
+
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try BrainstormCodec.save(file, to: url)
+
+            let descriptor = DocumentSession.shared.registerNewDocument(displayName: title)
+            DocumentSession.shared.updateFileURL(descriptor.id, url: url)
+            try DocumentSession.shared.writeAutosave(file: file, for: descriptor.id)
+            DocumentSession.shared.updateDirtyState(
+                id: descriptor.id,
+                isDirty: false,
+                contentRevision: 0,
+                savedRevision: 0
+            )
+            items = [RecentDocumentEntry(
+                id: url.path,
+                displayName: title,
+                pathHint: url.path,
+                lastOpenedAt: Date()
+            )]
+            persist()
+        } catch {
+            // The UI assertion reports a missing fixture with the app hierarchy.
+        }
+    }
+    #endif
 
     private func persist() {
         do {

@@ -16,37 +16,41 @@ struct NodeInspectorView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().opacity(0.5)
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 12) {
-                    themeSection
-                    if let node {
-                        if store.selectedIDs.count > 1 {
-                            multiSelectionNote
-                        }
-                        fillSection(node)
-                        textSection(node)
-                        shapeSection(node)
-                        borderSection(node)
-                        branchSection(node)
-                        if store.selectedIDs.count == 1 {
-                            mediaSection(node)
-                            positionSection(node)
-                        } else {
-                            singleNodeOnlyNote
-                        }
-                    } else {
-                        emptyState
-                            .frame(minHeight: 160)
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .fixedSize(horizontal: false, vertical: true)
-            }
+            styleInspector
         }
         .frame(width: BrainstormChrome.inspectorWidth)
         .frame(maxHeight: .infinity)
         .background { inspectorBackground }
+    }
+
+    private var styleInspector: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 12) {
+                themeSection
+                if let node {
+                    if store.selectedIDs.count > 1 {
+                        multiSelectionNote
+                    }
+                    fillSection(node)
+                    textSection(node)
+                    shapeSection(node)
+                    borderSection(node)
+                    branchSection(node)
+                    if store.selectedIDs.count == 1 {
+                        mediaSection(node)
+                        positionSection(node)
+                    } else {
+                        singleNodeOnlyNote
+                    }
+                } else {
+                    emptyState
+                        .frame(minHeight: 160)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: - Header
@@ -55,13 +59,19 @@ struct NodeInspectorView: View {
         HStack(spacing: 8) {
             Image(systemName: "paintpalette.fill")
                 .foregroundStyle(Color.accentColor)
-            Text(store.selectedIDs.count > 1 ? "Style · \(store.selectedIDs.count) nodes" : "Style")
+            Text(inspectorSummary)
                 .font(.headline)
                 .accessibilityIdentifier("styleSelectionSummary")
             Spacer()
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
+    }
+
+    private var inspectorSummary: String {
+        return store.selectedIDs.count > 1
+            ? "Style · \(store.selectedIDs.count) nodes"
+            : "Style"
     }
 
     private var emptyState: some View {

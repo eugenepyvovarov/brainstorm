@@ -33,9 +33,10 @@ moved, added, deleted, or expanded, and no complete `.bs` document payload is in
 
 The dependency-free viewer uses direct canvas interaction instead of permanently presenting a
 floating image toolbar. Pointer-wheel zoom keeps the point beneath the cursor stationary, while
-mouse or trackpad dragging pans the map. Keyboard shortcuts provide zoom, reset, and fit; a compact
-control surface may appear only while the viewer is being operated. The initial view fits and
-centers the complete map and recalculates when the browser window changes size.
+mouse, trackpad, or one-finger dragging pans the map. A two-finger pinch keeps the document point
+beneath the live touch midpoint stationary while zooming and translating, and double-tap restores
+the fitted view. Keyboard shortcuts provide zoom, reset, and fit. The initial view fits and centers
+the complete map and recalculates when the desktop or mobile visual viewport changes size.
 
 Document titles, node labels, identifiers, and attributes are escaped before insertion. Embedded
 media is generated locally, and the HTML contains no remote scripts, fonts, analytics, or

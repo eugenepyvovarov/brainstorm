@@ -43,6 +43,56 @@ struct DocumentTabIntentRegistry: Sendable {
 
 }
 
+enum ApplicationTerminationPreparation: Equatable {
+    /// This document is clean, or its requested save completed successfully.
+    case proceed
+    /// Quit may proceed, but recovery state must be reset only after every
+    /// other live document has also approved termination.
+    case discard
+    /// Keep the application and every document window open.
+    case cancel
+}
+
+@MainActor
+protocol ApplicationTerminationParticipant: AnyObject {
+    var documentID: UUID { get }
+
+    func prepareForApplicationTermination()
+        -> ApplicationTerminationPreparation
+
+    func discardUnsavedChangesForApplicationTermination()
+}
+
+/// Pure two-phase review shared by the AppKit termination bridge and tests.
+///
+/// Save is completed by each participant during preparation. Destructive
+/// discard cleanup is intentionally delayed until every participant approves,
+/// so Cancel on a later tab cannot alter an earlier still-open document.
+@MainActor
+enum ApplicationTerminationReview {
+    static func shouldTerminate(
+        participants: [any ApplicationTerminationParticipant]
+    ) -> Bool {
+        var pendingDiscards: [any ApplicationTerminationParticipant] = []
+
+        for participant in participants {
+            switch participant.prepareForApplicationTermination() {
+            case .proceed:
+                continue
+            case .discard:
+                pendingDiscards.append(participant)
+            case .cancel:
+                return false
+            }
+        }
+
+        for participant in pendingDiscards {
+            participant.discardUnsavedChangesForApplicationTermination()
+        }
+        return true
+    }
+}
+
 /// Deterministic native macOS document tabs for Brainstorm map windows.
 ///
 /// SwiftUI creates one `NSWindow` for each `WindowGroup` value. We keep that
@@ -66,6 +116,13 @@ public enum DocumentWindowTabbing {
     private static var windowsByDocumentID: [UUID: WeakWindow] = [:]
     private static var documentIDsByWindow: [ObjectIdentifier: UUID] = [:]
     private static var tabIntents = DocumentTabIntentRegistry()
+    private enum ApplicationTerminationReviewState {
+        case idle
+        case reviewing
+        case approved
+    }
+    private static var applicationTerminationReviewState:
+        ApplicationTerminationReviewState = .idle
 
     /// Brainstorm owns the distinction between New Window and New Tab.
     ///
@@ -165,10 +222,36 @@ public enum DocumentWindowTabbing {
     }
 
     /// Bring an already-open document forward rather than opening its URL twice.
-    public static func activate(documentID: UUID) {
-        guard let window = window(for: documentID) else { return }
+    ///
+    /// A persisted session descriptor can outlive its process-local window.
+    /// Return whether activation actually happened so callers can reopen a
+    /// dormant descriptor instead of silently treating it as visible.
+    @discardableResult
+    public static func activate(documentID: UUID) -> Bool {
+        guard let window = window(for: documentID) else { return false }
         window.tabGroup?.selectedWindow = window
         window.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    /// Enter or leave native full screen for the exact document window.
+    ///
+    /// Presentation mode stays in the existing document scene so its store,
+    /// autosave identity, and native tab selection remain authoritative.
+    /// AppKit completes this transition asynchronously; callers should observe
+    /// `NSWindow.didEnterFullScreenNotification` and
+    /// `NSWindow.didExitFullScreenNotification` before changing lifecycle state.
+    @discardableResult
+    public static func setFullScreen(_ shouldEnter: Bool, documentID: UUID) -> Bool {
+        guard let window = window(for: documentID) else { return false }
+        let isFullScreen = window.styleMask.contains(.fullScreen)
+        guard isFullScreen != shouldEnter else { return true }
+        window.toggleFullScreen(nil)
+        return true
+    }
+
+    public static func isFullScreen(documentID: UUID) -> Bool {
+        window(for: documentID)?.styleMask.contains(.fullScreen) == true
     }
 
     /// Create a document window that will join `parentDocumentID` when both
@@ -269,6 +352,76 @@ public enum DocumentWindowTabbing {
 
     public static func isMapWindow(_ window: NSWindow) -> Bool {
         documentID(for: window) != nil
+    }
+
+    /// Review every live map before AppKit terminates the process.
+    ///
+    /// `NSWindowDelegate.windowShouldClose` is not called for application Quit,
+    /// so the app delegate enters here and waits for one reply after the native
+    /// Save / Don’t Save / Cancel review has completed.
+    public static func applicationShouldTerminate(
+        _ application: NSApplication
+    ) -> NSApplication.TerminateReply {
+        switch applicationTerminationReviewState {
+        case .reviewing:
+            return .terminateLater
+        case .approved:
+            return .terminateNow
+        case .idle:
+            break
+        }
+
+        let participants = applicationTerminationParticipants()
+        guard !participants.isEmpty else {
+            return .terminateNow
+        }
+
+        applicationTerminationReviewState = .reviewing
+        DispatchQueue.main.async {
+            let shouldTerminate = ApplicationTerminationReview.shouldTerminate(
+                participants: participants
+            )
+            applicationTerminationReviewState =
+                shouldTerminate ? .approved : .idle
+            application.reply(
+                toApplicationShouldTerminate: shouldTerminate
+            )
+        }
+        return .terminateLater
+    }
+
+    private static func applicationTerminationParticipants()
+        -> [any ApplicationTerminationParticipant]
+    {
+        let liveIDs = Set(windowsByDocumentID.compactMap { id, window in
+            window.value == nil ? nil : id
+        })
+        var orderedIDs: [UUID] = []
+
+        if let activeID = DocumentSession.shared.state.activeDocumentID,
+           liveIDs.contains(activeID)
+        {
+            orderedIDs.append(activeID)
+        }
+        for descriptor in DocumentSession.shared.state.openDocuments
+        where liveIDs.contains(descriptor.id)
+            && !orderedIDs.contains(descriptor.id)
+        {
+            orderedIDs.append(descriptor.id)
+        }
+        for id in liveIDs.sorted(by: {
+            $0.uuidString < $1.uuidString
+        }) where !orderedIDs.contains(id) {
+            orderedIDs.append(id)
+        }
+
+        return orderedIDs.compactMap { id in
+            guard let window = windowsByDocumentID[id]?.value else {
+                windowsByDocumentID.removeValue(forKey: id)
+                return nil
+            }
+            return window.delegate as? any ApplicationTerminationParticipant
+        }
     }
 
     private static func reconcileTab(for childDocumentID: UUID) {

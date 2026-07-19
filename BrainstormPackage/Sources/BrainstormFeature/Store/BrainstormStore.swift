@@ -30,6 +30,13 @@ public final class BrainstormStore {
     public var editingSelectAll: Bool = true
     /// Title snapshot at the start of the current edit session (for undo / cancel).
     private var titleBeforeEdit: String = ""
+    /// Coalesced note-body editing state. The live draft is applied to `root`
+    /// for preview/recovery, then committed as one logical undo action.
+    public private(set) var noteEditingID: UUID?
+    public private(set) var noteEditingDraft: String = ""
+    private var noteBeforeEdit: NodeNote?
+    private var noteEditStartContentRevision: Int = 0
+    private var noteEditStartWasDirty = false
     public var fileURL: URL?
     public private(set) var isDirty: Bool = false
     public var lastError: String?
@@ -47,6 +54,9 @@ public final class BrainstormStore {
 
     /// Bumped whenever the undo stack changes so SwiftUI can refresh Undo/Redo controls.
     public private(set) var historyEpoch: UInt64 = 0
+    /// Bumped for note-only mutations without pretending the tree structure changed.
+    public private(set) var noteEpoch: UInt64 = 0
+    @ObservationIgnored private var noteAutosaveTask: Task<Void, Never>?
 
     // MARK: - View chrome
 
@@ -158,12 +168,33 @@ public final class BrainstormStore {
             }
             _ = apply(&snapshotRoot)
         }
+        if let noteEditingID {
+            let draft = noteEditingDraft
+            func applyNoteDraft(_ node: inout BrainstormNode) -> Bool {
+                if node.id == noteEditingID {
+                    var note = node.note ?? NodeNote()
+                    note.bodyMarkdown = NodeNote.normalizeLineEndings(draft)
+                    let canonical = note.canonicalized()
+                    node.note = canonical.isEmpty ? nil : canonical
+                    return true
+                }
+                for i in node.children.indices {
+                    if applyNoteDraft(&node.children[i]) { return true }
+                }
+                return false
+            }
+            _ = applyNoteDraft(&snapshotRoot)
+        }
         return BrainstormFile(root: snapshotRoot, themeID: themeID)
     }
 
     /// Persist recovery snapshot. Returns `false` on encode/disk failure (sets `lastAutosaveError`).
     @discardableResult
     public func performAutosave() -> Bool {
+        // A synchronous autosave subsumes any delayed note-only autosave. In
+        // particular, close and Don’t Save must not leave a task capable of
+        // re-registering a session descriptor after it has been removed.
+        cancelPendingNoteAutosave()
         let file = autosaveSnapshot()
         do {
             try DocumentSession.shared.writeAutosave(file: file, for: documentID)
@@ -218,6 +249,9 @@ public final class BrainstormStore {
 
     /// Undo the last structural change (delete, add, move, rename, …).
     public func undo() {
+        if noteEditingID != nil {
+            commitNoteEditing()
+        }
         // Don't leave a half-edited title fighting the restored snapshot.
         if isEditing {
             // Drop the live draft without registering another undo entry.
@@ -236,6 +270,9 @@ public final class BrainstormStore {
 
     /// Redo the last undone change.
     public func redo() {
+        if noteEditingID != nil {
+            commitNoteEditing()
+        }
         if isEditing {
             if let editingID {
                 _ = updateNode(id: editingID) { $0.title = titleBeforeEdit }
@@ -293,6 +330,7 @@ public final class BrainstormStore {
     /// whole map recolors; true custom hexes are left alone.
     /// Also becomes the default theme for newly created maps.
     public func applyTheme(_ id: String) {
+        if noteEditingID != nil { commitNoteEditing() }
         let nextTheme = AppTheme.theme(id: id)
         let next = nextTheme.id
         // Always remember the pick as the app default, even if this doc already uses it.
@@ -355,12 +393,14 @@ public final class BrainstormStore {
 
     /// Replace this window’s content with a blank map (keeps the same document id / autosave slot).
     public func newDocument() {
+        cancelPendingNoteAutosave()
         root = .root()
         selectedID = root.id
         editingID = root.id
         titleBeforeEdit = root.title
         editingDraft = root.title
         editingSeed = nil
+        clearNoteEditingState()
         fileURL = nil
         lastError = nil
         isFocusMode = uiPreferences.isFocusMode
@@ -399,6 +439,7 @@ public final class BrainstormStore {
 
     public func load(from url: URL) {
         do {
+            cancelPendingNoteAutosave()
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             let file = try BrainstormCodec.load(from: url)
@@ -409,6 +450,7 @@ public final class BrainstormStore {
             titleBeforeEdit = ""
             editingDraft = ""
             editingSeed = nil
+            clearNoteEditingState()
             fileURL = url
             lastError = nil
             isFocusMode = uiPreferences.isFocusMode
@@ -443,8 +485,22 @@ public final class BrainstormStore {
             lastError = "No save location selected."
             return false
         }
+        // Saving checkpoints a coalesced note edit for persistence and undo,
+        // but the mounted WYSIWYG editor must still have a valid session for
+        // the very next keystroke. Resume after both success and failure using
+        // the post-checkpoint note as the new baseline.
+        let noteEditingTarget = noteEditingID
+        defer {
+            if let noteEditingTarget,
+               noteEditingID == nil,
+               node(id: noteEditingTarget) != nil
+            {
+                beginNoteEditing(id: noteEditingTarget)
+            }
+        }
         do {
             if isEditing { commitEditing() }
+            if noteEditingID != nil { commitNoteEditing() }
             let accessed = target.startAccessingSecurityScopedResource()
             defer { if accessed { target.stopAccessingSecurityScopedResource() } }
             let file = BrainstormFile(root: root, themeID: themeID)
@@ -473,6 +529,9 @@ public final class BrainstormStore {
         if editingID != nil, editingID != id {
             commitEditing()
         }
+        if noteEditingID != nil, noteEditingID != id {
+            commitNoteEditing()
+        }
         selectedID = id
     }
 
@@ -482,6 +541,9 @@ public final class BrainstormStore {
         guard node(id: id) != nil else { return }
         if editingID != nil, editingID != id {
             commitEditing()
+        }
+        if noteEditingID != nil, noteEditingID != id {
+            commitNoteEditing()
         }
 
         var next = selectedIDs
@@ -528,6 +590,9 @@ public final class BrainstormStore {
     ///   - selectAll: When `true` and no seed, select the whole title (ready to replace).
     ///     When `false`, place the caret at the end so the user can extend/edit the existing text.
     public func beginEditing(id: UUID? = nil, seed: String? = nil, selectAll: Bool = true) {
+        if noteEditingID != nil {
+            commitNoteEditing()
+        }
         // Finish any previous edit first.
         if let editingID, editingID != (id ?? selectedID) {
             commitEditing()
@@ -669,6 +734,536 @@ public final class BrainstormStore {
         let next = editingDraft + "\n"
         updateEditingDraft(next)
         applyTitleLive(id: editingID, raw: next)
+    }
+
+    // MARK: - Node notes
+
+    public func note(for id: UUID? = nil) -> NodeNote? {
+        let target = id ?? selectedID ?? root.id
+        return node(id: target)?.note
+    }
+
+    /// Discrete body replacement. Interactive editors should use
+    /// begin/update/commit below to coalesce typing into one undo action.
+    @discardableResult
+    public func setNoteBody(_ body: String, for id: UUID? = nil) throws -> Bool {
+        let target = try resolveNoteTarget(id)
+        let normalized = NodeNote.normalizeLineEndings(body)
+        return try performNoteMutation(id: target, named: "Edit Note") { note in
+            note.bodyMarkdown = normalized
+        }
+    }
+
+    @discardableResult
+    public func setNoteVisibility(
+        _ visibility: NodeNoteVisibility,
+        for id: UUID? = nil
+    ) -> Bool {
+        let target = id ?? selectedID ?? root.id
+        guard let current = node(id: target)?.note, current.visibility != visibility else {
+            return false
+        }
+        return (try? performNoteMutation(id: target, named: "Change Note Visibility") { note in
+            note.visibility = visibility
+        }) ?? false
+    }
+
+    @discardableResult
+    public func addNoteImage(
+        _ data: Data,
+        altText: String,
+        caption: String? = nil,
+        for id: UUID? = nil
+    ) throws -> UUID {
+        let target = try resolveNoteTarget(id)
+        let attachmentPath = "\(notePath(for: target)).attachments"
+        let image = try NodeNoteImageNormalizer.normalize(
+            data,
+            altText: altText,
+            caption: caption,
+            path: attachmentPath
+        )
+        try performNoteMutation(id: target, named: "Add Note Image") { note in
+            note.attachments.append(.image(image))
+        }
+        return image.id
+    }
+
+    /// Normalizes an image for an editor-owned two-phase insertion.
+    ///
+    /// The rich-text editor renders this attachment before committing it to
+    /// the tree, avoiding an observation refresh between model mutation and
+    /// TextKit's local insertion.
+    func prepareNoteImageForEditor(
+        _ data: Data,
+        altText: String,
+        caption: String? = nil,
+        for id: UUID
+    ) throws -> NoteImageAttachment {
+        let target = try resolveNoteTarget(id)
+        return try NodeNoteImageNormalizer.normalize(
+            data,
+            altText: altText,
+            caption: caption,
+            path: "\(notePath(for: target)).attachments"
+        )
+    }
+
+    /// Appends a prepared image without ending the active coalesced note edit.
+    ///
+    /// Document-level undo is registered once when the editor session commits;
+    /// TextKit owns local image undo/redo while the surface remains open.
+    @discardableResult
+    func commitPreparedNoteImageForEditor(
+        _ image: NoteImageAttachment,
+        for id: UUID
+    ) throws -> Bool {
+        let target = try resolveNoteTarget(id)
+        var updated = node(id: target)?.note ?? NodeNote()
+        updated.attachments.append(.image(image))
+        updated = updated.canonicalized()
+
+        // Reject capacity failures before beginning or switching the coalesced
+        // session. A failed paste must not change selection or leave a hidden
+        // note editor active.
+        try NodeNoteValidator.validate(
+            note: updated,
+            path: notePath(for: target)
+        )
+        var candidateRoot = root
+        _ = updateNode(id: target, in: &candidateRoot) {
+            $0.note = updated
+        }
+        try NodeNoteValidator.validate(root: candidateRoot)
+
+        if noteEditingID != target {
+            beginNoteEditing(id: target)
+        }
+        guard noteEditingID == target else {
+            throw NodeNoteValidationError(
+                code: .nodeNotFound,
+                path: notePath(for: target),
+                message: "The node is no longer available for note editing."
+            )
+        }
+
+        return try restoreNoteEditorTransaction(
+            nodeID: target,
+            note: updated
+        )
+    }
+
+    @discardableResult
+    public func addNoteYouTube(
+        _ input: String,
+        caption: String? = nil,
+        for id: UUID? = nil
+    ) throws -> UUID {
+        let target = try resolveNoteTarget(id)
+        let attachmentPath = "\(notePath(for: target)).attachments"
+        let parsed = try YouTubeReferenceParser.parse(input, path: attachmentPath)
+        let youtube = NoteYouTubeAttachment(
+            videoID: parsed.videoID,
+            startSeconds: parsed.startSeconds,
+            caption: caption
+        ).canonicalized()
+        try performNoteMutation(id: target, named: "Add YouTube Video") { note in
+            note.attachments.append(.youtube(youtube))
+        }
+        return youtube.id
+    }
+
+    /// Atomically replaces the note body and appends videos extracted from
+    /// WYSIWYG text. Validation happens before any state is committed so a
+    /// capacity failure leaves both the body and attachments unchanged.
+    @discardableResult
+    func embedNoteYouTubeLinks(
+        _ inputs: [String],
+        bodyMarkdown: String,
+        for id: UUID? = nil
+    ) throws -> [UUID] {
+        let target = try resolveNoteTarget(id)
+        let attachmentPath = "\(notePath(for: target)).attachments"
+        let videos = try inputs.enumerated().map { index, input in
+            let parsed = try YouTubeReferenceParser.parse(
+                input,
+                path: "\(attachmentPath)[\(index)]"
+            )
+            return NoteYouTubeAttachment(
+                videoID: parsed.videoID,
+                startSeconds: parsed.startSeconds
+            ).canonicalized()
+        }
+        guard !videos.isEmpty else { return [] }
+
+        try performNoteMutation(
+            id: target,
+            named: videos.count == 1
+                ? "Embed YouTube Video"
+                : "Embed YouTube Videos"
+        ) { note in
+            note.bodyMarkdown = NodeNote.normalizeLineEndings(bodyMarkdown)
+            note.attachments.append(contentsOf: videos.map(NodeNoteAttachment.youtube))
+        }
+        return videos.map(\.id)
+    }
+
+    /// Replace an attachment with the same stable id (for alt text, caption,
+    /// start-time, or future metadata editing).
+    @discardableResult
+    public func replaceNoteAttachment(
+        _ attachment: NodeNoteAttachment,
+        for id: UUID? = nil
+    ) throws -> Bool {
+        let target = try resolveNoteTarget(id)
+        guard let note = node(id: target)?.note,
+              note.attachments.contains(where: { $0.id == attachment.id })
+        else {
+            throw NodeNoteValidationError(
+                code: .attachmentNotFound,
+                path: "\(notePath(for: target)).attachments",
+                message: "The note attachment no longer exists."
+            )
+        }
+        return try performNoteMutation(id: target, named: "Edit Note Attachment") { note in
+            guard let index = note.attachments.firstIndex(where: { $0.id == attachment.id }) else {
+                return
+            }
+            note.attachments[index] = attachment
+        }
+    }
+
+    @discardableResult
+    public func removeNoteAttachment(
+        _ attachmentID: UUID,
+        from nodeID: UUID? = nil
+    ) -> Bool {
+        let target = nodeID ?? selectedID ?? root.id
+        guard node(id: target)?.note?.attachments.contains(where: { $0.id == attachmentID }) == true
+        else {
+            return false
+        }
+        return (try? performNoteMutation(id: target, named: "Remove Note Attachment") { note in
+            note.attachments.removeAll { $0.id == attachmentID }
+        }) ?? false
+    }
+
+    @discardableResult
+    public func moveNoteAttachment(
+        _ attachmentID: UUID,
+        to index: Int,
+        in nodeID: UUID? = nil
+    ) -> Bool {
+        let target = nodeID ?? selectedID ?? root.id
+        guard let note = node(id: target)?.note,
+              let from = note.attachments.firstIndex(where: { $0.id == attachmentID }),
+              !note.attachments.isEmpty
+        else {
+            return false
+        }
+        let destination = max(0, min(index, note.attachments.count - 1))
+        guard from != destination else { return false }
+        return (try? performNoteMutation(id: target, named: "Reorder Note Attachment") { note in
+            guard let current = note.attachments.firstIndex(where: { $0.id == attachmentID }) else {
+                return
+            }
+            let moving = note.attachments.remove(at: current)
+            note.attachments.insert(moving, at: destination)
+        }) ?? false
+    }
+
+    @discardableResult
+    public func clearNote(for id: UUID? = nil) -> Bool {
+        let target = id ?? selectedID ?? root.id
+        guard node(id: target)?.note != nil else { return false }
+        if noteEditingID != nil {
+            commitNoteEditing()
+        }
+        let before = node(id: target)?.note
+        guard updateNode(id: target, { $0.note = nil }) else { return false }
+        markDirty()
+        noteEpoch &+= 1
+        registerNoteUndo(
+            nodeID: target,
+            before: before,
+            after: nil,
+            actionName: "Clear Note"
+        )
+        scheduleNoteAutosave()
+        return true
+    }
+
+    /// Start a live body-editing session. Attachments and visibility remain in
+    /// the tree while the body draft changes.
+    public func beginNoteEditing(id: UUID? = nil) {
+        let target = id ?? selectedID ?? root.id
+        guard let currentNode = node(id: target) else { return }
+        if noteEditingID == target { return }
+        if noteEditingID != nil {
+            commitNoteEditing()
+        }
+        if isEditing {
+            commitEditing()
+        }
+        selectedID = target
+        noteEditingID = target
+        noteEditingDraft = currentNode.note?.bodyMarkdown ?? ""
+        noteBeforeEdit = currentNode.note
+        noteEditStartContentRevision = contentRevision
+        noteEditStartWasDirty = isDirty
+    }
+
+    /// Apply a note draft for immediate preview and crash recovery without
+    /// creating an undo record for every keystroke.
+    public func updateNoteEditingDraft(_ body: String) throws {
+        guard let target = noteEditingID else { return }
+        let normalized = NodeNote.normalizeLineEndings(body)
+        var candidateNote = node(id: target)?.note ?? NodeNote()
+        candidateNote.bodyMarkdown = normalized
+        candidateNote = candidateNote.canonicalized()
+        try NodeNoteValidator.validateBody(
+            candidateNote.bodyMarkdown,
+            path: "\(notePath(for: target)).bodyMarkdown"
+        )
+
+        let storedNote: NodeNote? = candidateNote.isEmpty ? nil : candidateNote
+
+        noteEditingDraft = normalized
+        guard node(id: target)?.note != storedNote else { return }
+        _ = updateNode(id: target) { $0.note = storedNote }
+        markDirty()
+        noteEpoch &+= 1
+        scheduleNoteAutosave()
+    }
+
+    /// Restore an exact editor-owned note snapshot without consuming or
+    /// registering document-level undo. TextKit uses this for local attachment
+    /// transactions; the enclosing coalesced note session remains responsible
+    /// for its eventual document undo entry.
+    @discardableResult
+    func restoreNoteEditorTransaction(
+        nodeID: UUID,
+        note: NodeNote?
+    ) throws -> Bool {
+        guard let existingNode = node(id: nodeID) else {
+            throw NodeNoteValidationError(
+                code: .nodeNotFound,
+                path: notePath(for: nodeID),
+                message: "The node no longer exists."
+            )
+        }
+
+        let canonical = note?.canonicalized()
+        let restoredNote = canonical?.isEmpty == true ? nil : canonical
+        if let restoredNote {
+            try NodeNoteValidator.validate(
+                note: restoredNote,
+                path: notePath(for: nodeID)
+            )
+        }
+        guard existingNode.note != restoredNote else { return false }
+
+        var candidateRoot = root
+        _ = updateNode(id: nodeID, in: &candidateRoot) {
+            $0.note = restoredNote
+        }
+        try NodeNoteValidator.validate(root: candidateRoot)
+
+        _ = updateNode(id: nodeID) { $0.note = restoredNote }
+        if noteEditingID == nodeID {
+            // Retain `noteBeforeEdit` and the starting dirty/revision counters:
+            // local undo/redo is still part of the same coalesced edit session.
+            noteEditingDraft = restoredNote?.bodyMarkdown ?? ""
+        }
+        markDirty()
+        noteEpoch &+= 1
+        scheduleNoteAutosave()
+        return true
+    }
+
+    /// Finish a live note edit and register the complete session as one undo.
+    public func commitNoteEditing() {
+        guard let target = noteEditingID else { return }
+        let before = noteBeforeEdit
+        let after = node(id: target)?.note
+        let startRevision = noteEditStartContentRevision
+        let startWasDirty = noteEditStartWasDirty
+        clearNoteEditingState()
+
+        guard before != after else {
+            restoreNoteEditCounters(revision: startRevision, wasDirty: startWasDirty)
+            // A modified draft may already be the current recovery payload.
+            // Once the edit returns to its original value, replace that
+            // payload before advertising the restored clean revision.
+            performAutosave()
+            return
+        }
+        registerNoteUndo(
+            nodeID: target,
+            before: before,
+            after: after,
+            actionName: "Edit Note"
+        )
+        scheduleNoteAutosave()
+    }
+
+    public func cancelNoteEditing() {
+        guard let target = noteEditingID else { return }
+        let before = noteBeforeEdit
+        let startRevision = noteEditStartContentRevision
+        let startWasDirty = noteEditStartWasDirty
+        let changed = node(id: target)?.note != before
+        if changed {
+            _ = updateNode(id: target) { $0.note = before }
+            noteEpoch &+= 1
+        }
+        clearNoteEditingState()
+        restoreNoteEditCounters(revision: startRevision, wasDirty: startWasDirty)
+        // Cancellation restores the original tree and revision immediately;
+        // keep the crash-recovery payload equally authoritative.
+        performAutosave()
+    }
+
+    @discardableResult
+    private func performNoteMutation(
+        id: UUID,
+        named actionName: String,
+        _ mutate: (inout NodeNote) -> Void
+    ) throws -> Bool {
+        if noteEditingID != nil {
+            commitNoteEditing()
+        }
+        if isEditing {
+            commitEditing()
+        }
+        guard let existingNode = node(id: id) else {
+            throw NodeNoteValidationError(
+                code: .nodeNotFound,
+                path: notePath(for: id),
+                message: "The node no longer exists."
+            )
+        }
+        let before = existingNode.note
+        var candidate = before ?? NodeNote()
+        mutate(&candidate)
+        candidate = candidate.canonicalized()
+        try NodeNoteValidator.validate(note: candidate, path: notePath(for: id))
+        let after: NodeNote? = candidate.isEmpty ? nil : candidate
+        guard after != before else { return false }
+
+        var candidateRoot = root
+        _ = updateNode(id: id, in: &candidateRoot) { $0.note = after }
+        try NodeNoteValidator.validate(root: candidateRoot)
+
+        _ = updateNode(id: id) { $0.note = after }
+        selectedID = id
+        markDirty()
+        noteEpoch &+= 1
+        registerNoteUndo(
+            nodeID: id,
+            before: before,
+            after: after,
+            actionName: actionName
+        )
+        scheduleNoteAutosave()
+        return true
+    }
+
+    private func registerNoteUndo(
+        nodeID: UUID,
+        before: NodeNote?,
+        after: NodeNote?,
+        actionName: String
+    ) {
+        undoManager.beginUndoGrouping()
+        undoManager.registerUndo(withTarget: self) { target in
+            target.restoreNoteState(
+                before,
+                nodeID: nodeID,
+                inverse: after,
+                actionName: actionName
+            )
+        }
+        undoManager.setActionName(actionName)
+        undoManager.endUndoGrouping()
+        historyEpoch &+= 1
+    }
+
+    private func restoreNoteState(
+        _ note: NodeNote?,
+        nodeID: UUID,
+        inverse: NodeNote?,
+        actionName: String
+    ) {
+        _ = updateNode(id: nodeID) { $0.note = note }
+        selectedID = nodeID
+        clearNoteEditingState()
+        markDirty()
+        noteEpoch &+= 1
+        historyEpoch &+= 1
+        scheduleNoteAutosave()
+        undoManager.registerUndo(withTarget: self) { target in
+            target.restoreNoteState(
+                inverse,
+                nodeID: nodeID,
+                inverse: note,
+                actionName: actionName
+            )
+        }
+        undoManager.setActionName(actionName)
+    }
+
+    private func resolveNoteTarget(_ id: UUID?) throws -> UUID {
+        let target = id ?? selectedID ?? root.id
+        guard node(id: target) != nil else {
+            throw NodeNoteValidationError(
+                code: .nodeNotFound,
+                path: notePath(for: target),
+                message: "The node no longer exists."
+            )
+        }
+        return target
+    }
+
+    private func notePath(for id: UUID) -> String {
+        "$.nodes[\"\(id.uuidString)\"].note"
+    }
+
+    private func clearNoteEditingState() {
+        noteEditingID = nil
+        noteEditingDraft = ""
+        noteBeforeEdit = nil
+        noteEditStartContentRevision = contentRevision
+        noteEditStartWasDirty = isDirty
+    }
+
+    private func restoreNoteEditCounters(revision: Int, wasDirty: Bool) {
+        contentRevision = revision
+        isDirty = wasDirty
+        DocumentSession.shared.updateDirtyState(
+            id: documentID,
+            isDirty: isDirty,
+            contentRevision: contentRevision,
+            savedRevision: savedRevision
+        )
+    }
+
+    private func scheduleNoteAutosave() {
+        cancelPendingNoteAutosave()
+        noteAutosaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            self?.noteAutosaveTask = nil
+            self?.performAutosave()
+        }
+    }
+
+    /// Cancel a delayed note recovery write before document/session teardown.
+    /// `performAutosave()` also calls this because its synchronous write
+    /// consumes the pending request.
+    func cancelPendingNoteAutosave() {
+        noteAutosaveTask?.cancel()
+        noteAutosaveTask = nil
     }
 
     // MARK: - Tree mutations (BrainstormNode-style)
@@ -1710,6 +2305,9 @@ public final class BrainstormStore {
     /// Snapshot-based undo. Captures full tree + selection before mutation.
     /// Used for delete/add/move/etc. so accidental deletes can always be restored.
     private func performUndoable(named name: String, _ body: () -> Void) {
+        if noteEditingID != nil {
+            commitNoteEditing()
+        }
         let beforeRoot = root
         let beforeSelected = selectedID
         let beforeSelection = selectedIDs

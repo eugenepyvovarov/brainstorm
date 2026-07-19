@@ -38,6 +38,31 @@ struct BrainstormApp: App {
         .commands {
             FileMenuCommands(recents: recentDocuments)
 
+            CommandMenu("Presentation") {
+                Button("Start Presentation") {
+                    NotificationCenter.default.post(name: .brainstormPresent, object: nil)
+                }
+                .keyboardShortcut(.return, modifiers: [.command, .option])
+
+                Button("Exit Presentation") {
+                    NotificationCenter.default.post(
+                        name: .brainstormExitPresentation,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut(.escape, modifiers: [.command])
+            }
+
+            CommandMenu("Notes") {
+                Button("Edit Note for Selected Node") {
+                    NotificationCenter.default.post(
+                        name: .brainstormEditNote,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+            }
+
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") {
                     NotificationCenter.default.post(name: .brainstormUndo, object: nil)
@@ -84,6 +109,12 @@ final class BrainstormAppDelegate: NSObject, NSApplicationDelegate {
         // The dedicated welcome window is launched by SwiftUI. Map windows are
         // typed and opened explicitly only after the user chooses a map.
         false
+    }
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        DocumentWindowTabbing.applicationShouldTerminate(sender)
     }
 }
 
@@ -141,6 +172,9 @@ private struct FileMenuCommands: Commands {
             .keyboardShortcut("s", modifiers: [.command, .shift])
 
             Menu("Export") {
+                Button("HTML Viewer…") {
+                    NotificationCenter.default.post(name: .brainstormExportHTML, object: nil)
+                }
                 Button("PNG Image…") {
                     NotificationCenter.default.post(name: .brainstormExportPNG, object: nil)
                 }

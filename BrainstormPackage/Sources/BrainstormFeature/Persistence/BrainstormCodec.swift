@@ -5,6 +5,7 @@ public enum BrainstormCodecError: Error, LocalizedError, Sendable {
     case unsupportedVersion(Int)
     case encodingFailed
     case decodingFailed(String)
+    case validationFailed(NodeNoteValidationError)
 
     public var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ public enum BrainstormCodecError: Error, LocalizedError, Sendable {
             return "Failed to encode mind map."
         case .decodingFailed(let detail):
             return "Failed to decode mind map: \(detail)"
+        case .validationFailed(let issue):
+            return issue.localizedDescription
         }
     }
 }
@@ -53,24 +56,45 @@ public enum BrainstormCodec {
 
     public static func encode(_ file: BrainstormFile) throws -> Data {
         do {
-            return try encoder.encode(file)
+            let canonical = file.canonicalizedForWriting()
+            try NodeNoteValidator.validate(root: canonical.root)
+            return try encoder.encode(canonical)
+        } catch let issue as NodeNoteValidationError {
+            throw BrainstormCodecError.validationFailed(issue)
+        } catch let error as BrainstormCodecError {
+            throw error
         } catch {
             throw BrainstormCodecError.encodingFailed
         }
     }
 
     public static func decode(from data: Data) throws -> BrainstormFile {
-        let file: BrainstormFile
+        struct VersionEnvelope: Decodable {
+            var version: Int
+        }
+
+        let sourceVersion: Int
         do {
-            file = try decoder.decode(BrainstormFile.self, from: data)
+            sourceVersion = try decoder.decode(VersionEnvelope.self, from: data).version
         } catch {
             throw BrainstormCodecError.decodingFailed(error.localizedDescription)
         }
-        // v1 = title tree only; v2 adds style/media/offsets (decoded with
-        // defaults, so both verbose and sparse v2 files are accepted).
-        guard (1...BrainstormFile.currentVersion).contains(file.version) else {
-            throw BrainstormCodecError.unsupportedVersion(file.version)
+        guard (1...BrainstormFile.currentVersion).contains(sourceVersion) else {
+            throw BrainstormCodecError.unsupportedVersion(sourceVersion)
         }
+
+        let file: BrainstormFile
+        do {
+            file = try decoder.decode(BrainstormFile.self, from: data)
+            try NodeNoteValidator.validate(root: file.root)
+        } catch let issue as NodeNoteValidationError {
+            throw BrainstormCodecError.validationFailed(issue)
+        } catch {
+            throw BrainstormCodecError.decodingFailed(error.localizedDescription)
+        }
+        // v1 = title tree only; v2 adds style/media/offsets; v3 adds node
+        // notes. Legacy versions stay identifiable in memory and are upgraded
+        // centrally by `encode`, so CLI and app writes cannot emit notes as v2.
         return file
     }
 

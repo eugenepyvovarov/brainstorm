@@ -167,6 +167,13 @@ public enum BrainstormDocumentEditor {
         if let themeID = file.themeID, !AppTheme.all.contains(where: { $0.id == themeID }) {
             issues.append("unknown theme id \(themeID)")
         }
+        do {
+            try NodeNoteValidator.validate(root: file.root)
+        } catch let error as NodeNoteValidationError {
+            issues.append("\(error.code.rawValue) at \(error.path): \(error.message)")
+        } catch {
+            issues.append("node note validation failed: \(error.localizedDescription)")
+        }
         return issues
     }
 

@@ -70,3 +70,6 @@ fastlane/test_output
 *.profraw
 # macOS Finder metadata
 .DS_Store
+
+# Generated local previews and review screenshots.
+/artifacts/

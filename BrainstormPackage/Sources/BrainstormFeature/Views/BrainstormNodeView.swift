@@ -17,9 +17,18 @@ struct BrainstormNodeView: View {
     let isFreeDragging: Bool
     /// Static export rendering hides editor-only controls and glass effects.
     let isExporting: Bool
+    /// Whether this node owns non-empty note content.
+    let hasNote: Bool
+    /// Whether hover/selection may reveal the transient Note action.
+    let showNoteAction: Bool
+    /// Whether a compact note-presence marker is shown on the map.
+    let showNoteIndicator: Bool
     let editSeed: String?
     /// When beginning an edit without a seed: select all (replace) vs caret at end.
     let editSelectAll: Bool
+    /// Shared only by the interactive canvas note transition. Static exports
+    /// pass `nil` and render the card without geometry matching.
+    let noteFocusNamespace: Namespace.ID?
     var focusToken: FocusState<UUID?>.Binding
 
     let onSelect: () -> Void
@@ -38,6 +47,8 @@ struct BrainstormNodeView: View {
     let onFreeDragChanged: (_ translation: CGSize, _ location: CGPoint) -> Void
     let onFreeDragEnded: (_ translation: CGSize, _ location: CGPoint) -> Void
     let onResetPosition: () -> Void
+    /// Opens the node-centered note composition surface.
+    let onOpenNote: () -> Void
 
     // MARK: - State
     @State private var draft: String = ""
@@ -53,6 +64,13 @@ struct BrainstormNodeView: View {
     private var showNodeWell: Bool {
         // Dimmed (out-of-focus) nodes stay fully usable — well still appears on hover/select.
         !isExporting && !isEditing && (isSelected || isHovered)
+    }
+
+    private var showNotePill: Bool {
+        // The note action remains available while the selected node title is
+        // being edited; opening it commits the title through the existing
+        // canvas callback before entering the centered note workspace.
+        !isExporting && showNoteAction && (isSelected || isHovered)
     }
 
     private var displayTitle: String {
@@ -102,7 +120,7 @@ struct BrainstormNodeView: View {
 
     var body: some View {
         // Layout size = card only so selection / + well never shifts siblings horizontally.
-        nodeCard
+        matchedNodeCard
             .overlay(alignment: .trailing) {
                 HStack(spacing: 6) {
                     if layoutNode.hasChildren && !isEditing && !isExporting {
@@ -118,9 +136,29 @@ struct BrainstormNodeView: View {
                 // Place accessories just past the card’s trailing edge.
                 .alignmentGuide(.trailing) { $0[.leading] }
             }
+            .overlay(alignment: .bottom) {
+                if showNotePill {
+                    notePill
+                        .offset(y: 16)
+                        .zIndex(4)
+                }
+            }
+            .overlay {
+                if !isExporting && showNoteIndicator {
+                    GeometryReader { proxy in
+                        noteIndicator
+                            .position(
+                                noteIndicatorPosition(in: proxy.size)
+                            )
+                    }
+                    .allowsHitTesting(false)
+                    .zIndex(5)
+                }
+            }
             // Soften out-of-focus nodes but keep them readable enough to aim at.
             .opacity(isDimmed ? 0.38 : 1)
             .animation(.easeOut(duration: 0.12), value: showNodeWell)
+            .animation(.easeOut(duration: 0.12), value: showNotePill)
             .animation(.easeOut(duration: 0.18), value: isDimmed)
             .onHover { isHovered = $0 }
             .contextMenu { contextMenuItems }
@@ -138,6 +176,22 @@ struct BrainstormNodeView: View {
 
     // MARK: - Node card
 
+    @ViewBuilder
+    private var matchedNodeCard: some View {
+        if let noteFocusNamespace {
+            nodeCard
+                .matchedGeometryEffect(
+                    id: layoutNode.id,
+                    in: noteFocusNamespace,
+                    properties: .frame,
+                    anchor: .center,
+                    isSource: true
+                )
+        } else {
+            nodeCard
+        }
+    }
+
     private var nodeCard: some View {
         cardInterior
             .padding(.horizontal, 16)
@@ -146,6 +200,7 @@ struct BrainstormNodeView: View {
             .modifier(NodeChromeModifier(
                 shape: nodeShape,
                 cornerRadius: cornerRadius,
+                supportsRectangularGlass: layoutNode.style.shape != .diamond,
                 fillHex: resolvedFillHex,
                 isExporting: isExporting,
                 isSelected: isSelected,
@@ -334,9 +389,59 @@ struct BrainstormNodeView: View {
         .buttonStyle(.plain)
     }
 
+    private var notePill: some View {
+        Button(action: onOpenNote) {
+            Label(
+                hasNote ? "Note" : "+ Note",
+                systemImage: hasNote ? "note.text" : "note.text.badge.plus"
+            )
+            .font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 9)
+            .frame(height: 22)
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .brainstormGlassCapsule(
+            interactive: true,
+            tint: hasNote ? theme.selectionColor.opacity(0.85) : nil
+        )
+        .accessibilityLabel(
+            hasNote
+                ? "Edit note for \(displayTitle)"
+                : "Add note to \(displayTitle)"
+        )
+        .accessibilityHint("Opens a centered note editor without creating another node.")
+        .accessibilityIdentifier("nodeNotePill-\(layoutNode.id.uuidString)")
+    }
+
+    private var noteIndicator: some View {
+        Image(systemName: "note.text")
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(
+                theme.selectionColor.opacity(colorScheme == .dark ? 0.45 : 0.36)
+            )
+            .frame(width: 14, height: 14)
+            .allowsHitTesting(false)
+            .accessibilityLabel("Note present for \(displayTitle)")
+            .accessibilityIdentifier("nodeNoteIndicator-\(layoutNode.id.uuidString)")
+    }
+
+    private func noteIndicatorPosition(in size: CGSize) -> CGPoint {
+        if layoutNode.style.shape == .diamond {
+            // A bounding-box corner sits outside a diamond. Keep the passive
+            // marker in its upper-right interior quadrant instead.
+            return CGPoint(x: size.width * 0.66, y: size.height * 0.30)
+        }
+        return CGPoint(
+            x: max(7, size.width - 13),
+            y: min(max(7, size.height - 7), 12)
+        )
+    }
+
     @ViewBuilder
     private var contextMenuItems: some View {
         Button("Edit Title") { onBeginEdit() }
+        Button(hasNote ? "Open Note" : "Add Note") { onOpenNote() }
         Button("Add Child Idea") { onAddChild() }
         if layoutNode.hasChildren {
             Button(layoutNode.isExpanded ? "Fold Branch" : "Unfold Branch") {
@@ -416,8 +521,11 @@ struct BrainstormNodeView: View {
 // MARK: - Node chrome (glass or solid fill)
 
 private struct NodeChromeModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     let shape: AnyShape
     let cornerRadius: CGFloat
+    let supportsRectangularGlass: Bool
     let fillHex: String?
     let isExporting: Bool
     let isSelected: Bool
@@ -442,7 +550,20 @@ private struct NodeChromeModifier: ViewModifier {
             content
                 .background(fallbackFill, in: shape)
                 .overlay(shape.stroke(borderColor, lineWidth: borderWidth))
-        } else if theme.isSystem, #available(macOS 26.0, *) {
+        } else if reduceTransparency {
+            content
+                .background {
+                    ZStack {
+                        shape.fill(Color(nsColor: .controlBackgroundColor))
+                        shape.fill(fallbackFill)
+                    }
+                }
+                .overlay(shape.stroke(borderColor, lineWidth: borderWidth))
+        } else if !reduceTransparency,
+                  theme.isSystem,
+                  supportsRectangularGlass,
+                  #available(macOS 26.0, *)
+        {
             content
                 .glassEffect(glassStyle, in: .rect(cornerRadius: cornerRadius))
                 .overlay(shape.stroke(borderColor, lineWidth: borderWidth))

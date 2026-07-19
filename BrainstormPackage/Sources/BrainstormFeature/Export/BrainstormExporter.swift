@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 public enum BrainstormExportFormat: String, CaseIterable, Sendable {
     case png
     case pdf
+    case html
     case markdown
     case mermaid
     case plantuml
@@ -14,6 +15,7 @@ public enum BrainstormExportFormat: String, CaseIterable, Sendable {
         switch self {
         case .png: .png
         case .pdf: .pdf
+        case .html: .html
         case .markdown, .mermaid, .plantuml:
             UTType(filenameExtension: fileExtension, conformingTo: .plainText) ?? .plainText
         }
@@ -21,7 +23,7 @@ public enum BrainstormExportFormat: String, CaseIterable, Sendable {
 
     public var fileExtension: String {
         switch self {
-        case .png, .pdf: rawValue
+        case .png, .pdf, .html: rawValue
         case .markdown: "md"
         case .mermaid: "mmd"
         case .plantuml: "puml"
@@ -32,6 +34,7 @@ public enum BrainstormExportFormat: String, CaseIterable, Sendable {
         switch self {
         case .png: "PNG Image"
         case .pdf: "PDF Document"
+        case .html: "HTML Viewer"
         case .markdown: "Markdown Outline"
         case .mermaid: "Mermaid Mindmap"
         case .plantuml: "PlantUML Mindmap"
@@ -46,10 +49,62 @@ public enum BrainstormExportFormat: String, CaseIterable, Sendable {
         switch self {
         case .png: "PNG"
         case .pdf: "PDF"
+        case .html: "HTML"
         case .markdown: "Markdown"
         case .mermaid: "Mermaid"
         case .plantuml: "PlantUML"
         }
+    }
+}
+
+/// Controls which note payloads are included in an export.
+///
+/// Hidden notes are not private. Use ``none`` when the exported bytes must not
+/// contain note text or attachments.
+public enum BrainstormNoteInclusion: String, CaseIterable, Codable, Sendable {
+    /// Include notes whose saved visibility is shown.
+    case visible
+    /// Include every non-empty note, regardless of saved visibility.
+    case all
+    /// Omit note text and attachments entirely.
+    case none
+}
+
+/// The scene shown when a self-contained HTML export first opens.
+public enum BrainstormHTMLInitialMode: String, CaseIterable, Codable, Sendable {
+    case map
+    case presentation
+}
+
+/// Format-independent options shared by app and CLI exports.
+public struct BrainstormExportOptions: Equatable, Sendable {
+    public var noteInclusion: BrainstormNoteInclusion
+    public var htmlInitialMode: BrainstormHTMLInitialMode
+
+    public init(
+        noteInclusion: BrainstormNoteInclusion = .visible,
+        htmlInitialMode: BrainstormHTMLInitialMode = .map
+    ) {
+        self.noteInclusion = noteInclusion
+        self.htmlInitialMode = htmlInitialMode
+    }
+
+    public static let `default` = BrainstormExportOptions()
+}
+
+public struct BrainstormExportDescriptor: Equatable, Sendable {
+    public let fileExtension: String
+    public let contentType: UTType
+    public let isArchive: Bool
+
+    public init(
+        fileExtension: String,
+        contentType: UTType,
+        isArchive: Bool
+    ) {
+        self.fileExtension = fileExtension
+        self.contentType = contentType
+        self.isArchive = isArchive
     }
 }
 
@@ -81,20 +136,67 @@ public enum BrainstormExporter {
     private static let maximumPNGPixelCount: CGFloat = 64_000_000
     private static let maximumPDFDimension: CGFloat = 14_400
 
+    public static func descriptor(
+        root: BrainstormNode,
+        format: BrainstormExportFormat,
+        options: BrainstormExportOptions = .default
+    ) -> BrainstormExportDescriptor {
+        if format == .markdown,
+           BrainstormMarkdownBundle.includedNoteCount(
+               root: root,
+               inclusion: options.noteInclusion
+           ) > 0
+        {
+            return BrainstormExportDescriptor(
+                fileExtension: "zip",
+                contentType: .zip,
+                isArchive: true
+            )
+        }
+        return BrainstormExportDescriptor(
+            fileExtension: format.fileExtension,
+            contentType: format.contentType,
+            isArchive: false
+        )
+    }
+
     public static func data(
         root: BrainstormNode,
         theme: AppTheme,
         colorScheme: ColorScheme,
-        format: BrainstormExportFormat
+        format: BrainstormExportFormat,
+        options: BrainstormExportOptions = .default
     ) throws -> Data {
         switch format {
-        case .markdown, .mermaid, .plantuml:
-            return Data(BrainstormTextExporter.string(root: root, format: format).utf8)
-        case .png, .pdf:
+        case .markdown:
+            let bundle = try BrainstormMarkdownBundle.make(
+                root: root,
+                inclusion: options.noteInclusion
+            )
+            if bundle.isArchive {
+                return try BrainstormZIPArchive.data(entries: bundle.entries)
+            }
+            return Data(bundle.indexMarkdown.utf8)
+        case .mermaid, .plantuml:
+            return Data(
+                BrainstormTextExporter.string(
+                    root: root,
+                    format: format,
+                    options: options
+                ).utf8
+            )
+        case .png, .pdf, .html:
             break
         }
 
-        let layout = LayoutEngine().layout(root: root)
+        // Notes are an interactive/document layer. Raster and PDF exports are
+        // intentionally the clean mind map only; HTML and Markdown provide the
+        // note-aware export experiences.
+        let layoutNoteInclusion = layoutNoteInclusion(for: format)
+        let layout = LayoutEngine().layout(
+            root: root,
+            noteInclusion: layoutNoteInclusion
+        )
         guard layout.contentSize.width > 0, layout.contentSize.height > 0 else {
             throw BrainstormExportError.invalidCanvasSize
         }
@@ -110,8 +212,27 @@ public enum BrainstormExporter {
             return try pngData(surface: surface, canvasSize: layout.contentSize)
         case .pdf:
             return try pdfData(surface: surface, canvasSize: layout.contentSize)
+        case .html:
+            return BrainstormHTMLRenderer.data(
+                layout: layout,
+                rootID: root.id,
+                theme: theme,
+                colorScheme: colorScheme,
+                mapTitle: root.title,
+                root: root,
+                options: options
+            )
         case .markdown, .mermaid, .plantuml:
             preconditionFailure("Text exports return before canvas layout")
+        }
+    }
+
+    static func layoutNoteInclusion(
+        for format: BrainstormExportFormat
+    ) -> BrainstormNoteInclusion {
+        switch format {
+        case .png, .pdf, .html, .markdown, .mermaid, .plantuml:
+            .none
         }
     }
 
@@ -120,15 +241,36 @@ public enum BrainstormExporter {
         theme: AppTheme,
         colorScheme: ColorScheme,
         format: BrainstormExportFormat,
-        to url: URL
+        to url: URL,
+        options: BrainstormExportOptions = .default
     ) throws {
         let exportData = try data(
             root: root,
             theme: theme,
             colorScheme: colorScheme,
-            format: format
+            format: format,
+            options: options
         )
         try exportData.write(to: url, options: .atomic)
+    }
+
+    /// Label-order convenience for callers that construct options before the destination.
+    public static func write(
+        root: BrainstormNode,
+        theme: AppTheme,
+        colorScheme: ColorScheme,
+        format: BrainstormExportFormat,
+        options: BrainstormExportOptions,
+        to url: URL
+    ) throws {
+        try write(
+            root: root,
+            theme: theme,
+            colorScheme: colorScheme,
+            format: format,
+            to: url,
+            options: options
+        )
     }
 
     private static func pngData(
@@ -197,40 +339,32 @@ public enum BrainstormExporter {
 }
 
 /// Deterministic, complete-tree text exports shared by the app and CLI.
+///
+/// For Markdown with included notes, this returns the `map.md` index text.
+/// Use ``BrainstormExporter`` to receive the complete ZIP bundle containing
+/// linked note documents and assets.
 public enum BrainstormTextExporter {
-    public static func string(root: BrainstormNode, format: BrainstormExportFormat) -> String {
+    public static func string(
+        root: BrainstormNode,
+        format: BrainstormExportFormat,
+        options: BrainstormExportOptions = .default
+    ) -> String {
         switch format {
         case .markdown:
-            markdown(root: root)
+            BrainstormMarkdownBundle.indexMarkdown(
+                root: root,
+                inclusion: options.noteInclusion
+            )
         case .mermaid:
             mermaid(root: root)
         case .plantuml:
             plantUML(root: root)
-        case .png, .pdf:
-            preconditionFailure("Raster formats are rendered by BrainstormExporter")
+        case .png, .pdf, .html:
+            preconditionFailure("Visual formats are rendered by BrainstormExporter")
         }
     }
 
-    private static func markdown(root: BrainstormNode) -> String {
-        let heading = markdownInline(root.title, multilineSeparator: "<br>")
-        var lines = ["# \(heading)", ""]
-        appendMarkdownNode(root, depth: 0, to: &lines)
-        return lines.joined(separator: "\n") + "\n"
-    }
-
-    private static func appendMarkdownNode(
-        _ node: BrainstormNode,
-        depth: Int,
-        to lines: inout [String]
-    ) {
-        let title = markdownInline(node.title, multilineSeparator: "<br>")
-        lines.append(String(repeating: "    ", count: depth) + "- " + title)
-        for child in node.children {
-            appendMarkdownNode(child, depth: depth + 1, to: &lines)
-        }
-    }
-
-    private static func markdownInline(_ value: String, multilineSeparator: String) -> String {
+    static func markdownInline(_ value: String, multilineSeparator: String) -> String {
         let parts = normalizedLines(value).map { line in
             line
                 .replacingOccurrences(of: "\\", with: "\\\\")
@@ -307,7 +441,7 @@ public enum BrainstormTextExporter {
             .joined(separator: "\\n")
     }
 
-    private static func normalizedLines(_ value: String) -> [String] {
+    static func normalizedLines(_ value: String) -> [String] {
         value.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -342,8 +476,12 @@ private struct BrainstormExportSurface: View {
                     isDimmed: false,
                     isFreeDragging: false,
                     isExporting: true,
+                    hasNote: false,
+                    showNoteAction: false,
+                    showNoteIndicator: false,
                     editSeed: nil,
                     editSelectAll: true,
+                    noteFocusNamespace: nil,
                     focusToken: $focusedNodeID,
                     onSelect: {},
                     onBeginEdit: {},
@@ -358,10 +496,12 @@ private struct BrainstormExportSurface: View {
                     onDeleteEmptyWhileEditing: {},
                     onFreeDragChanged: { _, _ in },
                     onFreeDragEnded: { _, _ in },
-                    onResetPosition: {}
+                    onResetPosition: {},
+                    onOpenNote: {}
                 )
                 .position(x: node.frame.midX, y: node.frame.midY)
             }
+
         }
         .frame(width: layout.contentSize.width, height: layout.contentSize.height)
         .clipped()

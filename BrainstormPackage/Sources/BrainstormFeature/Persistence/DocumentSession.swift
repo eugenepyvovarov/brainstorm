@@ -322,6 +322,56 @@ public final class DocumentSession {
         persistSession()
     }
 
+    /// Apply a final “Don’t Save” decision during application termination.
+    ///
+    /// Saved documents remain in the restorable session, but their recovery
+    /// snapshot is replaced with the last user-saved bytes. Untitled documents,
+    /// or saved files that can no longer be read safely, are removed from the
+    /// session so discarded recovery content can never reappear on relaunch.
+    public func discardUnsavedChangesForTermination(_ id: UUID) {
+        guard var descriptor = descriptor(for: id) else { return }
+        guard let fileURL = resolvedFileURL(for: id) else {
+            closeDocument(id)
+            return
+        }
+
+        let accessed = fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                fileURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let savedFile = try BrainstormCodec.load(from: fileURL)
+            try writeAutosave(
+                file: savedFile,
+                fileName: descriptor.autosaveFileName
+            )
+            // The rotated backup contains the pre-discard recovery snapshot.
+            // Once the saved bytes are safely installed, it must not be used
+            // as a later fallback for changes the user explicitly discarded.
+            let backupURL = autosaveFileURL(for: id)
+                .appendingPathExtension("bak")
+            try? fileManager.removeItem(at: backupURL)
+
+            let cleanRevision = max(
+                descriptor.contentRevision,
+                descriptor.savedRevision
+            )
+            descriptor.isDirty = false
+            descriptor.contentRevision = cleanRevision
+            descriptor.savedRevision = cleanRevision
+            descriptor.lastEditedAt = Date()
+            upsert(descriptor)
+            persistSession()
+        } catch {
+            // If the saved file or clean autosave cannot be established, drop
+            // the descriptor rather than resurrecting discarded edits.
+            closeDocument(id)
+        }
+    }
+
     // MARK: - Autosave I/O
 
     public func autosaveFileURL(for id: UUID) -> URL {
@@ -379,7 +429,11 @@ public final class DocumentSession {
             if desc.contentRevision != desc.savedRevision || desc.isDirty {
                 dirty = desc.isDirty || desc.contentRevision != desc.savedRevision
             } else if let fileURL, let disk = try? BrainstormCodec.load(from: fileURL) {
-                dirty = disk != auto
+                // Autosaves are always canonical v3, while a clean user file
+                // may still be v1/v2. Compare document content rather than the
+                // envelope version so migration alone does not create a false
+                // recovery edit.
+                dirty = !Self.hasSameDocumentContent(disk, auto)
             } else {
                 // Untitled with matching revisions → clean (fresh window / seed autosave).
                 dirty = false
@@ -445,6 +499,14 @@ public final class DocumentSession {
 
     private static func canonicalPath(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private static func hasSameDocumentContent(
+        _ lhs: BrainstormFile,
+        _ rhs: BrainstormFile
+    ) -> Bool {
+        lhs.root.canonicalized() == rhs.root.canonicalized()
+            && lhs.themeID == rhs.themeID
     }
 
     private func writeAutosave(file: BrainstormFile, fileName: String) throws {

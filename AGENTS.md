@@ -16,13 +16,14 @@
 
 ## Feature documentation sync
 
-When adding or changing any user-facing functionality, update all three documentation surfaces in the same change before considering the work complete:
+When adding or changing any user-facing functionality, update these repository documentation surfaces in the same change before considering the implementation complete:
 
 1. `README.md` — explain the behavior, user workflow, CLI command, file format, or installation change.
 2. `brainstorm-skill/SKILL.md` — update agent-facing commands, automation behavior, validation rules, and recovery guidance.
-3. The live Brainstorm project page at `https://selfhosted.ninja/projects/brainstorm/` — update the relevant feature copy, FAQ, screenshots, or GIFs through the WordPress Manager skill.
 
-Round-trip the full WordPress page body when publishing an update, and verify the public page after syncing it. Keep the README and skill instructions accurate for the released behavior, not only for local development.
+The live Brainstorm project page at `https://selfhosted.ninja/projects/brainstorm/` does not need to be updated for unreleased development work. Update it through the WordPress Manager skill only when the change is being released or when the user explicitly requests publication. When publishing, update the relevant feature copy, FAQ, screenshots, or GIFs, round-trip the full WordPress page body, and verify the public page after syncing it.
+
+Keep the README and skill instructions accurate for the implemented behavior during development and for the released behavior at release time.
 
 ## WordPress publishing scope
 

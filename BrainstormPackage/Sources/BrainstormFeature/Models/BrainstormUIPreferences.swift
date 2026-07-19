@@ -14,6 +14,7 @@ public final class BrainstormUIPreferences {
     private let defaults: UserDefaults
     private static let showInspectorKey = "Brainstorm.ui.showInspector"
     private static let focusModeKey = "Brainstorm.ui.focusMode"
+    private static let showNotesLayerKey = "Brainstorm.ui.showNotesLayer"
 
     /// Whether the style inspector is shown beside the canvas.
     public var showInspector: Bool {
@@ -31,10 +32,22 @@ public final class BrainstormUIPreferences {
         }
     }
 
+    /// Whether non-empty note-presence markers are shown on the canvas.
+    ///
+    /// This is workspace chrome only. Toggling it never changes an individual
+    /// note's legacy export visibility or dirties the document.
+    public var showNotesLayer: Bool {
+        didSet {
+            guard oldValue != showNotesLayer else { return }
+            defaults.set(showNotesLayer, forKey: Self.showNotesLayerKey)
+        }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.showInspector = defaults.object(forKey: Self.showInspectorKey) as? Bool ?? true
         self.isFocusMode = defaults.object(forKey: Self.focusModeKey) as? Bool ?? false
+        self.showNotesLayer = defaults.object(forKey: Self.showNotesLayerKey) as? Bool ?? false
     }
 
     /// Convenience for isolated tests (in-memory suite).

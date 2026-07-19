@@ -10,12 +10,30 @@ enum BrainstormChrome {
 }
 
 struct GlassCardModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     var cornerRadius: CGFloat = 12
     var interactive: Bool = false
     var tint: Color? = nil
 
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
+        if reduceTransparency {
+            content
+                .background {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(Color(nsColor: .windowBackgroundColor))
+                        if let tint {
+                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                                .fill(tint.opacity(0.16))
+                        }
+                    }
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+                )
+        } else if #available(macOS 26.0, *) {
             content
                 .glassEffect(
                     glassStyle,
@@ -50,11 +68,32 @@ struct GlassCardModifier: ViewModifier {
 }
 
 struct GlassCapsuleModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     var interactive: Bool = true
     var tint: Color? = nil
 
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
+        if reduceTransparency {
+            content
+                .background {
+                    ZStack {
+                        Capsule(style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                        if let tint {
+                            Capsule(style: .continuous)
+                                .fill(tint.opacity(0.24))
+                        }
+                    }
+                }
+                .overlay(
+                    Capsule(style: .continuous)
+                        .strokeBorder(
+                            tint?.opacity(0.55) ?? Color.primary.opacity(0.18),
+                            lineWidth: 1
+                        )
+                )
+        } else if #available(macOS 26.0, *) {
             content.glassEffect(glassStyle, in: .capsule)
         } else if let tint {
             content
@@ -77,11 +116,19 @@ struct GlassCapsuleModifier: ViewModifier {
 }
 
 struct GlassButtonModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     var prominent = false
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
+        if reduceTransparency {
+            if prominent {
+                content.buttonStyle(.borderedProminent)
+            } else {
+                content.buttonStyle(.bordered)
+            }
+        } else if #available(macOS 26.0, *) {
             if prominent {
                 content.buttonStyle(.glassProminent)
             } else {
@@ -112,23 +159,40 @@ extension View {
         modifier(GlassButtonModifier(prominent: prominent))
     }
 
-    /// Groups glass children when available.
-    @ViewBuilder
-    func brainstormGlassContainer<Content: View>(
-        spacing: CGFloat = 16,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) {
-                content()
-            }
-        } else {
-            content()
-        }
-    }
 }
 
 // MARK: - Shared chrome bits
+
+/// Deliberately scoped grouping for a small family of related glass controls.
+///
+/// This is a container rather than a `View` extension so it cannot silently
+/// discard a receiver. Reduce Transparency bypasses the glass compositor and
+/// lets each child use its opaque fallback.
+struct BrainstormGlassGroup<Content: View>: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    private let spacing: CGFloat
+    private let content: Content
+
+    init(
+        spacing: CGFloat = 16,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.spacing = spacing
+        self.content = content()
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if !reduceTransparency, #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content
+            }
+        } else {
+            content
+        }
+    }
+}
 
 struct KeyCap: View {
     let text: String

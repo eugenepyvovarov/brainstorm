@@ -116,15 +116,25 @@ struct BrainstormCLI {
     private static func update(_ options: CLIOptions) throws -> CLIResponse {
         try options.allowing([
             "node", "title", "expanded", "emoji", "sticker", "image", "offset-x", "offset-y",
-            "dry-run", "pretty",
+            "note-text", "note-file", "note-visible", "note-image", "note-image-alt",
+            "note-image-caption", "note-youtube", "note-youtube-caption", "note-remove",
+            "note-move", "note-index", "note-clear", "dry-run", "pretty",
         ])
         let url = try documentURL(options)
         var file = try loadValidated(url)
         let id = try nodeReference(options.required("node"), in: file)
         guard options.hasAnyValue([
             "title", "expanded", "emoji", "sticker", "image", "offset-x", "offset-y",
-        ]) else {
+            "note-text", "note-file", "note-visible", "note-image", "note-youtube",
+            "note-remove", "note-move", "note-index",
+        ]) || options.hasFlag("note-clear") else {
             throw CLIUsageError("update requires at least one field to change.")
+        }
+        if options.value("note-text") != nil, options.value("note-file") != nil {
+            throw CLIUsageError("Use only one of --note-text or --note-file.")
+        }
+        if options.value("note-index") != nil, options.value("note-move") == nil {
+            throw CLIUsageError("--note-index requires --note-move <attachment-uuid>.")
         }
 
         let title = options.value("title")
@@ -145,6 +155,66 @@ struct BrainstormCLI {
         }
         let offsetX = try optionalNumber(options.value("offset-x"))
         let offsetY = try optionalNumber(options.value("offset-y"))
+        let noteBody = try noteBodyValue(options)
+        let noteVisibility = try options.value("note-visible").map(parseNoteVisibility)
+        let noteImage: NoteImageAttachment?
+        if let path = options.value("note-image") {
+            guard let altText = options.value("note-image-alt"),
+                  !altText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                throw CLIUsageError("--note-image requires non-empty --note-image-alt text.")
+            }
+            let imageURL = URL(fileURLWithPath: path).standardizedFileURL
+            let data: Data
+            do {
+                data = try Data(contentsOf: imageURL)
+            } catch {
+                throw CLIUsageError(
+                    "Could not read note image '\(imageURL.path)': \(error.localizedDescription)"
+                )
+            }
+            noteImage = try NodeNoteImageNormalizer.normalize(
+                data,
+                altText: altText,
+                caption: options.value("note-image-caption"),
+                path: "$.root.note.attachments"
+            )
+        } else {
+            noteImage = nil
+        }
+        let noteYouTube: NoteYouTubeAttachment?
+        if let reference = options.value("note-youtube") {
+            let parsed = try YouTubeReferenceParser.parse(reference)
+            noteYouTube = NoteYouTubeAttachment(
+                videoID: parsed.videoID,
+                startSeconds: parsed.startSeconds,
+                caption: options.value("note-youtube-caption")
+            )
+        } else {
+            noteYouTube = nil
+        }
+        let noteRemoveID = try options.value("note-remove").map(parseUUID)
+        let noteMoveID = try options.value("note-move").map(parseUUID)
+        let noteMoveIndex = try options.value("note-index").map(parseInt)
+        let existingAttachmentIDs = Set(
+            BrainstormDocumentEditor.node(in: file, id: id)?.note?.attachments.map(\.id) ?? []
+        )
+        if let noteRemoveID, !existingAttachmentIDs.contains(noteRemoveID) {
+            throw CLIUsageError("Note attachment not found: \(noteRemoveID.uuidString).")
+        }
+        if let noteMoveID {
+            guard let noteMoveIndex else {
+                throw CLIUsageError("--note-move requires --note-index <n>.")
+            }
+            guard existingAttachmentIDs.contains(noteMoveID) else {
+                throw CLIUsageError("Note attachment not found: \(noteMoveID.uuidString).")
+            }
+            let maximumIndex = max(0, existingAttachmentIDs.count - 1)
+            guard (0...maximumIndex).contains(noteMoveIndex) else {
+                throw CLIUsageError("--note-index must be between 0 and \(maximumIndex).")
+            }
+        }
+
         try BrainstormDocumentEditor.updateNode(in: &file, id: id) { node in
             if let title { node.title = BrainstormDocumentEditor.normalizedTitle(title) }
             if let expanded { node.isExpanded = expanded }
@@ -159,6 +229,39 @@ struct BrainstormCLI {
             }
             if options.value("offset-x") != nil { node.offsetX = offsetX }
             if options.value("offset-y") != nil { node.offsetY = offsetY }
+
+            if options.hasFlag("note-clear") {
+                node.note = nil
+            }
+            if noteBody != nil || noteVisibility != nil || noteImage != nil || noteYouTube != nil {
+                var note = node.note ?? NodeNote()
+                if let noteBody {
+                    note.bodyMarkdown = NodeNote.normalizeLineEndings(noteBody)
+                }
+                if let noteVisibility {
+                    note.visibility = noteVisibility
+                }
+                if let noteImage {
+                    note.attachments.append(.image(noteImage))
+                }
+                if let noteYouTube {
+                    note.attachments.append(.youtube(noteYouTube))
+                }
+                node.note = note.isEmpty ? nil : note.canonicalized()
+            }
+            if let noteRemoveID, var note = node.note {
+                note.attachments.removeAll { $0.id == noteRemoveID }
+                node.note = note.isEmpty ? nil : note
+            }
+            if let noteMoveID, let noteMoveIndex, var note = node.note,
+               let sourceIndex = note.attachments.firstIndex(where: { $0.id == noteMoveID }),
+               note.attachments.indices.contains(sourceIndex)
+            {
+                let attachment = note.attachments.remove(at: sourceIndex)
+                let destination = min(max(0, noteMoveIndex), note.attachments.count)
+                note.attachments.insert(attachment, at: destination)
+                node.note = note
+            }
         }
         let node = BrainstormDocumentEditor.node(in: file, id: id)
         return try finishMutation("update", url: url, file: file, node: node, options: options)
@@ -231,11 +334,13 @@ struct BrainstormCLI {
     }
 
     private static func export(_ options: CLIOptions) throws -> CLIResponse {
-        try options.allowing(["format", "output", "appearance", "pretty"])
+        try options.allowing([
+            "format", "output", "appearance", "notes", "presentation", "pretty",
+        ])
         let url = try documentURL(options)
         let file = try loadValidated(url)
         guard let format = BrainstormExportFormat(rawValue: try options.required("format").lowercased()) else {
-            throw CLIUsageError("--format must be png, pdf, markdown, mermaid, or plantuml.")
+            throw CLIUsageError("--format must be png, pdf, html, markdown, mermaid, or plantuml.")
         }
         let outputPath = try options.required("output")
         let theme = AppTheme.theme(id: file.themeID ?? AppTheme.system.id)
@@ -243,25 +348,55 @@ struct BrainstormCLI {
         guard appearance == nil || appearance == "light" || appearance == "dark" else {
             throw CLIUsageError("--appearance must be light or dark.")
         }
+        if options.hasFlag("notes") {
+            throw CLIUsageError("--notes requires visible, all, or none.")
+        }
+        let noteInclusion = try options.value("notes").map(parseNoteInclusion) ?? .visible
+        if options.hasFlag("presentation"), format != .html {
+            throw CLIUsageError("--presentation is available only with --format html.")
+        }
+        let exportOptions = BrainstormExportOptions(
+            noteInclusion: noteInclusion,
+            htmlInitialMode: options.hasFlag("presentation") ? .presentation : .map
+        )
         let scheme: ColorScheme = appearance == "dark" || (appearance == nil && theme.isDark) ? .dark : .light
+        let descriptor = BrainstormExporter.descriptor(
+            root: file.root,
+            format: format,
+            options: exportOptions
+        )
         if outputPath == "-" {
             let data = try BrainstormExporter.data(
                 root: file.root,
                 theme: theme,
                 colorScheme: scheme,
-                format: format
+                format: format,
+                options: exportOptions
             )
             try FileHandle.standardOutput.write(contentsOf: data)
             return CLIResponse(command: "export", file: url.path, changed: false, output: "-")
         }
 
         let output = URL(fileURLWithPath: outputPath).standardizedFileURL
+        if format == .markdown,
+           output.pathExtension.lowercased() != descriptor.fileExtension
+        {
+            let kind = descriptor.isArchive
+                ? "included notes produce a ZIP archive"
+                : "no note files are included"
+            throw CLIUsageError(
+                "Markdown export \(kind); use --output <name>."
+                    + descriptor.fileExtension
+                    + " or --output -."
+            )
+        }
         try BrainstormExporter.write(
             root: file.root,
             theme: theme,
             colorScheme: scheme,
             format: format,
-            to: output
+            to: output,
+            options: exportOptions
         )
         return CLIResponse(command: "export", file: url.path, changed: false, output: output.path)
     }
@@ -292,6 +427,7 @@ struct BrainstormCLI {
         for operation in request.operations {
             results.append(try apply(operation, to: &file))
         }
+        file.version = BrainstormFile.currentVersion
         try BrainstormDocumentEditor.validate(file)
         let dryRun = options.hasFlag("dry-run")
         if !dryRun { try BrainstormCodec.save(file, to: url) }
@@ -322,6 +458,125 @@ struct BrainstormCLI {
                 if let y = operation.offsetY { node.offsetY = y }
             }
             return BatchResult(op: operation.op, nodeID: id)
+        case "note.set":
+            let id = try nodeReference(operation.node ?? "", in: file)
+            guard operation.bodyMarkdown != nil || operation.visibility != nil else {
+                throw CLIUsageError("note.set requires bodyMarkdown and/or visibility.")
+            }
+            let visibility = try operation.visibility.map(parseNoteVisibility)
+            try BrainstormDocumentEditor.updateNode(in: &file, id: id) { node in
+                var note = node.note ?? NodeNote()
+                if let body = operation.bodyMarkdown {
+                    note.bodyMarkdown = NodeNote.normalizeLineEndings(body)
+                }
+                if let visibility {
+                    note.visibility = visibility
+                }
+                node.note = note.isEmpty ? nil : note.canonicalized()
+            }
+            return BatchResult(op: operation.op, nodeID: id)
+        case "note.clear":
+            let id = try nodeReference(operation.node ?? "", in: file)
+            try BrainstormDocumentEditor.updateNode(in: &file, id: id) { node in
+                node.note = nil
+            }
+            return BatchResult(op: operation.op, nodeID: id)
+        case "note.image":
+            let id = try nodeReference(operation.node ?? "", in: file)
+            guard let imagePath = operation.imagePath,
+                  let altText = operation.altText,
+                  !altText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                throw CLIUsageError("note.image requires imagePath and non-empty altText.")
+            }
+            let imageURL = URL(fileURLWithPath: imagePath).standardizedFileURL
+            let data: Data
+            do {
+                data = try Data(contentsOf: imageURL)
+            } catch {
+                throw CLIUsageError(
+                    "Could not read note image '\(imageURL.path)': \(error.localizedDescription)"
+                )
+            }
+            let image = try NodeNoteImageNormalizer.normalize(
+                data,
+                altText: altText,
+                caption: operation.caption,
+                path: "$.root.note.attachments"
+            )
+            try BrainstormDocumentEditor.updateNode(in: &file, id: id) { node in
+                var note = node.note ?? NodeNote()
+                note.attachments.append(.image(image))
+                node.note = note
+            }
+            return BatchResult(op: operation.op, nodeID: id, attachmentID: image.id)
+        case "note.youtube":
+            let id = try nodeReference(operation.node ?? "", in: file)
+            guard let input = operation.youtube else {
+                throw CLIUsageError("note.youtube requires youtube.")
+            }
+            let parsed = try YouTubeReferenceParser.parse(input)
+            let youtube = NoteYouTubeAttachment(
+                videoID: parsed.videoID,
+                startSeconds: parsed.startSeconds,
+                caption: operation.caption
+            )
+            try BrainstormDocumentEditor.updateNode(in: &file, id: id) { node in
+                var note = node.note ?? NodeNote()
+                note.attachments.append(.youtube(youtube))
+                node.note = note
+            }
+            return BatchResult(op: operation.op, nodeID: id, attachmentID: youtube.id)
+        case "note.remove":
+            let id = try nodeReference(operation.node ?? "", in: file)
+            guard let rawAttachmentID = operation.attachmentID else {
+                throw CLIUsageError("note.remove requires attachmentID.")
+            }
+            let attachmentID = try parseUUID(rawAttachmentID)
+            guard BrainstormDocumentEditor.node(in: file, id: id)?.note?.attachments
+                .contains(where: { $0.id == attachmentID }) == true
+            else {
+                throw CLIUsageError("Note attachment not found: \(attachmentID.uuidString).")
+            }
+            try BrainstormDocumentEditor.updateNode(in: &file, id: id) { node in
+                guard var note = node.note else { return }
+                note.attachments.removeAll { $0.id == attachmentID }
+                node.note = note.isEmpty ? nil : note
+            }
+            return BatchResult(
+                op: operation.op,
+                nodeID: id,
+                attachmentID: attachmentID
+            )
+        case "note.move":
+            let id = try nodeReference(operation.node ?? "", in: file)
+            guard let rawAttachmentID = operation.attachmentID,
+                  let destination = operation.attachmentIndex
+            else {
+                throw CLIUsageError("note.move requires attachmentID and attachmentIndex.")
+            }
+            let attachmentID = try parseUUID(rawAttachmentID)
+            guard let note = BrainstormDocumentEditor.node(in: file, id: id)?.note,
+                  let source = note.attachments.firstIndex(where: { $0.id == attachmentID })
+            else {
+                throw CLIUsageError("Note attachment not found: \(attachmentID.uuidString).")
+            }
+            guard (0..<note.attachments.count).contains(destination) else {
+                throw CLIUsageError(
+                    "attachmentIndex must be between 0 and \(max(0, note.attachments.count - 1))."
+                )
+            }
+            try BrainstormDocumentEditor.updateNode(in: &file, id: id) { node in
+                guard var note = node.note else { return }
+                let attachment = note.attachments.remove(at: source)
+                note.attachments.insert(attachment, at: destination)
+                node.note = note
+            }
+            return BatchResult(
+                op: operation.op,
+                nodeID: id,
+                attachmentID: attachmentID
+            )
         case "style":
             let id = try nodeReference(operation.node ?? "", in: file)
             let shape = try operation.shape.map(parseShape)
@@ -366,12 +621,15 @@ struct BrainstormCLI {
         node: BrainstormNode?,
         options: CLIOptions
     ) throws -> CLIResponse {
-        try BrainstormDocumentEditor.validate(file)
+        var canonicalFile = file
+        canonicalFile.version = BrainstormFile.currentVersion
+        try BrainstormDocumentEditor.validate(canonicalFile)
         let dryRun = options.hasFlag("dry-run")
-        if !dryRun { try BrainstormCodec.save(file, to: url) }
+        if !dryRun { try BrainstormCodec.save(canonicalFile, to: url) }
         return CLIResponse(
             command: command, file: url.path, changed: true, dryRun: dryRun,
-            document: file, node: node
+            document: canonicalFile,
+            node: node.flatMap { BrainstormDocumentEditor.node(in: canonicalFile, id: $0.id) }
         )
     }
 
@@ -408,6 +666,7 @@ struct BrainstormCLI {
                 childIDs: node.children.map(\.id),
                 style: node.style,
                 media: node.media,
+                note: node.note,
                 offsetX: node.offsetX,
                 offsetY: node.offsetY
             ))
@@ -417,6 +676,45 @@ struct BrainstormCLI {
         }
         visit(root, parentID: nil, index: 0)
         return records
+    }
+
+    private static func noteBodyValue(_ options: CLIOptions) throws -> String? {
+        if let body = options.value("note-text") {
+            return NodeNote.normalizeLineEndings(body)
+        }
+        guard let input = options.value("note-file") else { return nil }
+        let data: Data
+        do {
+            if input == "-" {
+                data = try FileHandle.standardInput.readToEnd() ?? Data()
+            } else {
+                data = try Data(contentsOf: URL(fileURLWithPath: input).standardizedFileURL)
+            }
+        } catch {
+            throw CLIUsageError("Could not read note text from '\(input)': \(error.localizedDescription)")
+        }
+        guard let body = String(data: data, encoding: .utf8) else {
+            throw CLIUsageError("Note text input must be valid UTF-8.")
+        }
+        return NodeNote.normalizeLineEndings(body)
+    }
+
+    private static func parseNoteVisibility(_ raw: String) throws -> NodeNoteVisibility {
+        switch raw.lowercased() {
+        case "shown", "show", "visible", "true", "yes", "1":
+            return .shown
+        case "hidden", "hide", "false", "no", "0":
+            return .hidden
+        default:
+            throw CLIUsageError("--note-visible must be shown/hidden or true/false.")
+        }
+    }
+
+    private static func parseNoteInclusion(_ raw: String) throws -> BrainstormNoteInclusion {
+        guard let inclusion = BrainstormNoteInclusion(rawValue: raw.lowercased()) else {
+            throw CLIUsageError("--notes must be visible, all, or none.")
+        }
+        return inclusion
     }
 
     private static func parseUUID(_ raw: String) throws -> UUID {
@@ -495,17 +793,30 @@ struct BrainstormCLI {
       brainstorm update <file.bs> --node <root|uuid> [--title <text>] [--expanded true|false]
                          [--emoji <value|none>] [--sticker <symbol|none>] [--image <path|none>]
                          [--offset-x <n|none>] [--offset-y <n|none>]
+                         [--note-text <markdown>|--note-file <path|->]
+                         [--note-visible shown|hidden] [--note-clear]
+                         [--note-image <path> --note-image-alt <text>]
+                         [--note-image-caption <text>]
+                         [--note-youtube <id|url>] [--note-youtube-caption <text>]
+                         [--note-remove <attachment-uuid>]
+                         [--note-move <attachment-uuid> --note-index <n>]
       brainstorm style <file.bs> --node <root|uuid> [--fill <hex|none>] [--text <hex|none>]
                         [--branch <hex|none>] [--border <hex|none>] [--border-width <n|none>]
                         [--shape roundedRect|capsule|rectangle|diamond]
                         [--font-size <n|none>] [--bold true|false] [--italic true|false]
       brainstorm move <file.bs> --node <uuid> --parent <root|uuid> [--index <n>]
       brainstorm delete <file.bs> --node <uuid>
-      brainstorm export <file.bs> --format png|pdf|markdown|mermaid|plantuml --output <path|->
-                        [--appearance light|dark]
+      brainstorm export <file.bs> --format png|pdf|html|markdown|mermaid|plantuml --output <path|->
+                        [--appearance light|dark] [--notes visible|all|none]
+                        [--presentation]
       brainstorm validate <file.bs>
       brainstorm apply <file.bs> [--input <request.json|->] [--dry-run]
 
+    Note text supports paragraphs, **bold**, _italic_, and ordered/unordered lists.
+    Images are normalized and embedded in the .bs document; YouTube stores a validated video id.
+    Markdown writes one .md outline when no notes are included. When notes are included it writes
+    a .zip containing map.md, linked notes/*.md files, and extracted image assets.
+    --presentation makes an HTML export open directly in its depth-first presentation mode.
     Mutations save atomically by default. Add --dry-run to preview JSON without writing.
     Use --output - to stream exported bytes to stdout without a JSON response.
     Other successes emit machine-readable JSON; failures emit JSON to stderr and exit nonzero.
@@ -521,7 +832,9 @@ private struct CLIOptions {
         var positionals: [String] = []
         var values: [String: String] = [:]
         var flags: Set<String> = []
-        let booleanFlags: Set<String> = ["force", "dry-run", "pretty", "flat"]
+        let booleanFlags: Set<String> = [
+            "force", "dry-run", "pretty", "flat", "note-clear", "presentation",
+        ]
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
@@ -598,6 +911,7 @@ private struct FlatNode: Encodable {
     let childIDs: [UUID]
     let style: NodeStyle
     let media: NodeMedia
+    let note: NodeNote?
     let offsetX: Double?
     let offsetY: Double?
 }
@@ -638,11 +952,20 @@ private struct BatchOperation: Decodable {
     var bold: Bool?
     var italic: Bool?
     var theme: String?
+    var bodyMarkdown: String?
+    var visibility: String?
+    var imagePath: String?
+    var altText: String?
+    var caption: String?
+    var youtube: String?
+    var attachmentID: String?
+    var attachmentIndex: Int?
 }
 
 private struct BatchResult: Encodable {
     let op: String
     var nodeID: UUID? = nil
+    var attachmentID: UUID? = nil
 }
 
 private struct CLIUsageError: Error, LocalizedError {

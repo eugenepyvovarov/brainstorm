@@ -5,6 +5,10 @@ struct BrainstormCanvasView: View {
     // MARK: - Inputs
     @Bindable var store: BrainstormStore
     var focusedNodeID: FocusState<UUID?>.Binding
+    let noteEditingNodeID: UUID?
+    let isInteractionLocked: Bool
+    let noteFocusNamespace: Namespace.ID
+    let onOpenNote: (UUID) -> Void
 
     // MARK: - State
     @State private var dropTargetID: UUID?
@@ -25,10 +29,12 @@ struct BrainstormCanvasView: View {
     @State private var magnificationBaseZoom: CGFloat?
     /// Reference storage avoids invalidating the whole canvas on every pointer move.
     @State private var zoomInteraction = CanvasZoomInteraction()
-    /// Captured on mouse-down because SwiftUI can deliver the tap after Shift is released.
-    @State private var lastClickModifiers: NSEvent.ModifierFlags = []
+    /// Reference storage makes the mouse-down modifier snapshot visible to the
+    /// tap callback synchronously, before SwiftUI schedules another body pass.
+    @State private var clickModifierState = CanvasClickModifierState()
     /// Reference-type cache so pan/zoom do not re-measure the full tree.
     @State private var layoutCache = LayoutResultCache()
+    @State private var uiPreferences = BrainstormUIPreferences.shared
 
     // MARK: - Body
 
@@ -42,7 +48,9 @@ struct BrainstormCanvasView: View {
         let layout = layoutCache.layout(
             root: store.root,
             structureEpoch: store.structureEpoch,
-            liveTitle: liveTitle
+            noteEpoch: 0,
+            liveTitle: liveTitle,
+            noteInclusion: .none
         )
         let focusTarget = store.editingID ?? store.selectedID
         let focusSet = store.isFocusMode ? store.focusVisibleIDs() : nil
@@ -61,6 +69,10 @@ struct BrainstormCanvasView: View {
                     zoom: zoom
                 )
             }
+            .overlay(alignment: .topTrailing) {
+                noteControls
+                    .padding(12)
+            }
             .clipped()
             .coordinateSpace(name: "brainstormCanvas")
             .onContinuousHover(coordinateSpace: .named("brainstormCanvas")) { phase in
@@ -71,6 +83,7 @@ struct BrainstormCanvasView: View {
             .background(CanvasBackgroundFill(theme: store.theme))
             .background(
                 ScrollWheelMonitor(
+                    isEnabled: !isInteractionLocked,
                     onScroll: { deltaX, deltaY, location, isZoom in
                         handleScroll(
                             deltaX: deltaX,
@@ -80,7 +93,7 @@ struct BrainstormCanvasView: View {
                         )
                     },
                     onMouseDown: { modifiers in
-                        lastClickModifiers = modifiers
+                        clickModifierState.flags = modifiers
                     }
                 )
             )
@@ -168,9 +181,12 @@ struct BrainstormCanvasView: View {
             }
 
             ForEach(layout.nodes) { node in
-                // Focus mode only dims appearance — nodes stay fully interactive.
-                nodeView(node, layout: layout, focusSet: focusSet, searchSet: searchSet)
-                    .position(displayCenter(for: node))
+                if node.id != noteEditingNodeID {
+                    // Removing the selected card lets matched geometry carry
+                    // that exact node into the foreground note surface.
+                    nodeView(node, layout: layout, focusSet: focusSet, searchSet: searchSet)
+                        .position(displayCenter(for: node))
+                }
             }
         }
         .frame(width: docSize.width, height: docSize.height, alignment: .topLeading)
@@ -210,6 +226,8 @@ struct BrainstormCanvasView: View {
         searchSet: Set<UUID>
     ) -> some View {
         let dimmed = focusSet.map { !$0.contains(node.id) } ?? false
+        let note = store.node(id: node.id)?.note
+        let hasNote = note?.isEmpty == false
         return BrainstormNodeView(
             layoutNode: node,
             isRoot: node.id == store.root.id,
@@ -220,8 +238,13 @@ struct BrainstormCanvasView: View {
             isDimmed: dimmed,
             isFreeDragging: freeDrag?.nodeID == node.id,
             isExporting: false,
+            hasNote: hasNote,
+            showNoteAction: uiPreferences.showNotesLayer,
+            showNoteIndicator: uiPreferences.showNotesLayer
+                && hasNote,
             editSeed: store.editingID == node.id ? store.editingSeed : nil,
             editSelectAll: store.editingID == node.id ? store.editingSelectAll : true,
+            noteFocusNamespace: noteFocusNamespace,
             focusToken: focusedNodeID,
             onSelect: {
                 store.select(
@@ -229,7 +252,8 @@ struct BrainstormCanvasView: View {
                     // Prefer the mouse-down snapshot because SwiftUI may
                     // complete a tap after Shift has been released; consult
                     // the live flags too for an in-progress physical click.
-                    extending: lastClickModifiers.contains(.shift) || NSEvent.modifierFlags.contains(.shift)
+                    extending: clickModifierState.flags.contains(.shift)
+                        || NSEvent.modifierFlags.contains(.shift)
                 )
             },
             onBeginEdit: { store.beginEditing(id: node.id, selectAll: true) },
@@ -261,8 +285,59 @@ struct BrainstormCanvasView: View {
             },
             onResetPosition: {
                 store.resetPosition(id: node.id)
+            },
+            onOpenNote: {
+                openNote(for: node.id)
             }
         )
+    }
+
+    private var noteControls: some View {
+        BrainstormGlassGroup(spacing: 8) {
+            notesLayerToggle
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Note view controls")
+    }
+
+    private var notesLayerToggle: some View {
+        noteControlButton(
+            systemImage: "note.text",
+            isOn: uiPreferences.showNotesLayer,
+            label: uiPreferences.showNotesLayer
+                ? "Hide Notes layer"
+                : "Show Notes layer",
+            identifier: "notesLayerToggle"
+        ) {
+            uiPreferences.showNotesLayer.toggle()
+        }
+    }
+
+    private func noteControlButton(
+        systemImage: String,
+        isOn: Bool,
+        label: String,
+        identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
+        .brainstormGlassCapsule(
+            interactive: true,
+            tint: isOn ? store.theme.selectionColor.opacity(0.8) : nil
+        )
+        .help(label)
+        .accessibilityLabel(label)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityIdentifier(identifier)
+    }
+
+    private func openNote(for nodeID: UUID) {
+        onOpenNote(nodeID)
     }
 
     // MARK: - Free drag (preview only — no store writes until end)
@@ -527,7 +602,12 @@ struct BrainstormCanvasView: View {
         location: CGPoint,
         isZoom: Bool
     ) {
-        guard store.editingID == nil, freeDrag == nil else { return }
+        guard !isInteractionLocked,
+              store.editingID == nil,
+              freeDrag == nil
+        else {
+            return
+        }
         if isZoom {
             let oldZoom = store.zoomScale
             zoomInteraction.lastPointerLocation = location
@@ -762,23 +842,32 @@ struct CanvasBackgroundFill: View {
 /// Local monitor: only consumes scroll when the pointer is over *this* view.
 /// Lets the inspector / other chrome scroll with the mouse wheel.
 private struct ScrollWheelMonitor: NSViewRepresentable {
+    var isEnabled: Bool
     var onScroll: (CGFloat, CGFloat, CGPoint, Bool) -> Void
     var onMouseDown: (NSEvent.ModifierFlags) -> Void
 
     func makeNSView(context: Context) -> CanvasScrollHost {
         let view = CanvasScrollHost()
+        view.isEnabled = isEnabled
         view.onScroll = onScroll
         view.onMouseDown = onMouseDown
         return view
     }
 
     func updateNSView(_ nsView: CanvasScrollHost, context: Context) {
+        nsView.isEnabled = isEnabled
         nsView.onScroll = onScroll
         nsView.onMouseDown = onMouseDown
     }
 }
 
+@MainActor
+private final class CanvasClickModifierState {
+    var flags: NSEvent.ModifierFlags = []
+}
+
 private final class CanvasScrollHost: NSView {
+    var isEnabled = true
     var onScroll: ((CGFloat, CGFloat, CGPoint, Bool) -> Void)?
     var onMouseDown: ((NSEvent.ModifierFlags) -> Void)?
     nonisolated(unsafe) private var monitor: Any?
@@ -800,6 +889,7 @@ private final class CanvasScrollHost: NSView {
         remove()
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDown]) { [weak self] event in
             guard let self, let window = self.window, event.window == window else { return event }
+            guard self.isEnabled else { return event }
             // Only when pointer is over the canvas host — not the inspector.
             let locInView = self.convert(event.locationInWindow, from: nil)
             guard self.bounds.contains(locInView) else { return event }
@@ -885,26 +975,38 @@ struct EdgeCanvas: View {
 final class LayoutResultCache {
     private let engine = LayoutEngine()
     private var structureEpoch: UInt64 = .max
+    private var noteEpoch: UInt64 = .max
     private var liveID: UUID?
     private var liveTitle: String?
+    private var noteInclusionRawValue: String?
     private var result: LayoutResult?
 
     func layout(
         root: BrainstormNode,
         structureEpoch: UInt64,
-        liveTitle: LayoutEngine.LiveTitleOverride?
+        noteEpoch: UInt64,
+        liveTitle: LayoutEngine.LiveTitleOverride?,
+        noteInclusion: BrainstormNoteInclusion
     ) -> LayoutResult {
         if structureEpoch == self.structureEpoch,
+           noteEpoch == self.noteEpoch,
            liveTitle?.id == liveID,
            liveTitle?.title == self.liveTitle,
+           noteInclusion.rawValue == noteInclusionRawValue,
            let result
         {
             return result
         }
-        let next = engine.layout(root: root, liveTitle: liveTitle)
+        let next = engine.layout(
+            root: root,
+            liveTitle: liveTitle,
+            noteInclusion: noteInclusion
+        )
         self.structureEpoch = structureEpoch
+        self.noteEpoch = noteEpoch
         self.liveID = liveTitle?.id
         self.liveTitle = liveTitle?.title
+        self.noteInclusionRawValue = noteInclusion.rawValue
         self.result = next
         return next
     }
