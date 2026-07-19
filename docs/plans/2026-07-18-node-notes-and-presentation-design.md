@@ -215,6 +215,10 @@ world, natural node fronts, bounded note backs, keyboard controls, progress, and
 handling as the app. The settled HTML camera uses a device-pixel-aligned 2D transform, removes
 permanent `will-change`, and applies drop-shadow compositing to the vector shape rather than the
 whole slide; this prevents Safari from rasterizing node text before presentation magnification.
+Its resting scale shares the native readable-focus floor: a remote DFS predecessor or successor
+cannot shrink a shallow focused node into an overview merely to remain on screen. Nearby real-map
+neighbors may still peek at their true bearings, while long-distance navigation exposes the wider
+map during the travel animation and settles back to the same bounded focus at every tree depth.
 Perspective is present only on the active flip. The note back retains an exact fixed screen size
 through inverse camera scaling and scrolls overflow within that surface. URL hashes identify the
 current node for refresh/deep linking.

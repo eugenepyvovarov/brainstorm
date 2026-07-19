@@ -2842,6 +2842,19 @@ struct NodeNotesAndPresentationTests {
         #expect(html.contains("const availableHeight = Math.max(1, safe.maxY - safe.minY);"))
         #expect(html.contains("availableWidth * 0.72 / width"))
         #expect(html.contains("availableHeight * 0.62 / height"))
+        #expect(html.contains("const minimumFocusedScaleRatio ="))
+        #expect(html.contains("0.68;"))
+        #expect(html.contains("const floor = Math.min("))
+        #expect(
+            html.contains(
+                "sequentialCaps.length === sequential.length"
+            )
+        )
+        #expect(
+            html.contains(
+                "sequentialCaps.every(cap => cap >= floor)"
+            )
+        )
         #expect(
             html.contains(
                 "return Math.min(base, Math.min(...sequentialCaps));"
@@ -2854,7 +2867,8 @@ struct NodeNotesAndPresentationTests {
         )
         #expect(html.contains("kind: slide.dataset.nextRelationKind"))
         #expect(html.contains("kind: slide.dataset.previousRelationKind"))
-        #expect(!html.contains("const floor ="))
+        #expect(html.contains("cap >= floor"))
+        #expect(html.contains("return Math.min(base, bestCap ?? floor);"))
         #expect(html.contains("const navigatePresentationTo"))
         #expect(html.contains("const smoothBranchRoute"))
         #expect(

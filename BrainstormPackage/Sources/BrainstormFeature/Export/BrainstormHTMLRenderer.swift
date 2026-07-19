@@ -1577,6 +1577,12 @@ enum BrainstormHTMLRenderer {
                     )
                   )
                 );
+                const minimumFocusedScaleRatio =
+                  \(number(PresentationNeighborZoomPolicy.minimumFocusedScaleRatio));
+                const floor = Math.min(
+                  base,
+                  Math.max(1, base * minimumFocusedScaleRatio)
+                );
                 const slideIndex = slideIndexByElement.get(slide) ?? -1;
                 const sequential = [
                   {
@@ -1599,12 +1605,17 @@ enum BrainstormHTMLRenderer {
                   .map(item => item.candidate);
                 const sequentialCaps = sequential.map(candidate =>
                   presentationPeekCap(slide, candidate)
-                ).filter(cap => Number.isFinite(cap) && cap > 0);
-                if (sequentialCaps.length > 0) {
+                );
+                if (
+                  sequentialCaps.length > 0
+                  && sequentialCaps.length === sequential.length
+                  && sequentialCaps.every(cap => cap >= floor)
+                ) {
                   // Cap the focus zoom so the real previous and next DFS
                   // surfaces remain partially visible at their true map
-                  // bearings. Camera travel can still zoom farther out for
-                  // long branch returns.
+                  // bearings, but never sacrifice the focused node's readable
+                  // resting size. Camera travel can still zoom farther out
+                  // for long branch returns.
                   return Math.min(base, Math.min(...sequentialCaps));
                 }
 
@@ -1614,14 +1625,13 @@ enum BrainstormHTMLRenderer {
                 candidates.forEach(candidate => {
                   const cap = presentationPeekCap(slide, candidate);
                   if (
-                    Number.isFinite(cap)
-                    && cap > 0
+                    cap >= floor
                     && (bestCap === null || cap > bestCap)
                   ) {
                     bestCap = cap;
                   }
                 });
-                return Math.min(base, bestCap ?? base);
+                return Math.min(base, bestCap ?? floor);
               };
 
               const syncPresentationRenderScale = () => {
