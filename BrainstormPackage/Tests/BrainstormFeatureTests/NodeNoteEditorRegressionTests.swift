@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 import Testing
+import UniformTypeIdentifiers
 @testable import BrainstormFeature
 
 @Suite("Node note editor regressions", .serialized)
@@ -226,6 +227,53 @@ struct NodeNoteEditorRegressionTests {
 
         #expect(textView.importImage(from: pasteboard))
         #expect(imported == [firstData, secondData])
+    }
+
+    @Test func jpegDragPayloadWithRemoteURLIsAcceptedAndImported() throws {
+        let image = NSImage(size: NSSize(width: 12, height: 8))
+        image.lockFocus()
+        NSColor.systemMint.setFill()
+        NSRect(x: 0, y: 0, width: 12, height: 8).fill()
+        image.unlockFocus()
+        let tiff = try #require(image.tiffRepresentation)
+        let bitmap = try #require(NSBitmapImageRep(data: tiff))
+        let jpeg = try #require(
+            bitmap.representation(
+                using: .jpeg,
+                properties: [.compressionFactor: 0.9]
+            )
+        )
+
+        let item = NSPasteboardItem()
+        item.setString(
+            "https://example.com/dragged-photo.jpg",
+            forType: .URL
+        )
+        item.setData(
+            jpeg,
+            forType: NSPasteboard.PasteboardType(
+                UTType.jpeg.identifier
+            )
+        )
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name(
+                "brainstorm-jpeg-drag-\(UUID().uuidString)"
+            )
+        )
+        pasteboard.clearContents()
+        defer { pasteboard.clearContents() }
+        #expect(pasteboard.writeObjects([item]))
+
+        var imported: [Data] = []
+        let textView = NodeNoteTextView(usingTextLayoutManager: true)
+        textView.onPasteImage = { data, _ in
+            imported.append(data)
+            return true
+        }
+
+        #expect(textView.canImportImage(from: pasteboard))
+        #expect(textView.importImage(from: pasteboard))
+        #expect(imported == [jpeg])
     }
 
     @Test func mixedPasteboardImportsFileAndBitmapItemsOnceEach() throws {
@@ -476,6 +524,242 @@ struct NodeNoteEditorRegressionTests {
         )
     }
 
+    @Test func fileImagesCanBeAddedAgainAfterDeletingAnInlineImage() throws {
+        let root = BrainstormNode(title: "File image note")
+        let store = BrainstormStore(root: root, startEditing: false)
+        store.beginNoteEditing(id: root.id)
+        var bodyDraft = ""
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "BrainstormSequentialFileImages-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        func currentImages() -> [NoteImageAttachment] {
+            store.note(for: root.id)?.imageAttachments ?? []
+        }
+
+        func makeEditor() -> NodeNoteTextEditor {
+            NodeNoteTextEditor(
+                text: Binding(
+                    get: { bodyDraft },
+                    set: { newValue in
+                        if (try? store.updateNoteEditingDraft(newValue)) != nil {
+                            bodyDraft = newValue
+                        }
+                    }
+                ),
+                imageAttachments: currentImages(),
+                commandRequest: nil,
+                onImagePasted: { data, altText in
+                    guard let image = try? store.prepareNoteImageForEditor(
+                        data,
+                        altText: altText,
+                        for: root.id
+                    )
+                    else {
+                        return nil
+                    }
+                    let before = store.note(for: root.id)
+                    return NodeNoteImageInsertion(
+                        attachment: image,
+                        commit: {
+                            guard (
+                                try? store.commitPreparedNoteImageForEditor(
+                                    image,
+                                    for: root.id
+                                )
+                            ) == true,
+                            let after = store.note(for: root.id)
+                            else {
+                                return nil
+                            }
+                            return NodeNoteStoreTransaction(
+                                undo: {
+                                    _ = try? store.restoreNoteEditorTransaction(
+                                        nodeID: root.id,
+                                        note: before
+                                    )
+                                },
+                                redo: {
+                                    _ = try? store.restoreNoteEditorTransaction(
+                                        nodeID: root.id,
+                                        note: after
+                                    )
+                                }
+                            )
+                        }
+                    )
+                },
+                onImageAttachmentsRemoved: { attachmentIDs, bodyMarkdown in
+                    if bodyDraft != bodyMarkdown {
+                        guard (
+                            try? store.updateNoteEditingDraft(bodyMarkdown)
+                        ) != nil
+                        else {
+                            return nil
+                        }
+                        bodyDraft = bodyMarkdown
+                    }
+
+                    let before = store.note(for: root.id)
+                    store.commitNoteEditing()
+                    var removedAll = true
+                    for attachmentID in attachmentIDs {
+                        removedAll = store.removeNoteAttachment(
+                            attachmentID,
+                            from: root.id
+                        ) && removedAll
+                    }
+                    store.beginNoteEditing(id: root.id)
+                    guard removedAll else {
+                        _ = try? store.restoreNoteEditorTransaction(
+                            nodeID: root.id,
+                            note: before
+                        )
+                        return nil
+                    }
+                    let after = store.note(for: root.id)
+                    return NodeNoteStoreTransaction(
+                        undo: {
+                            _ = try? store.restoreNoteEditorTransaction(
+                                nodeID: root.id,
+                                note: before
+                            )
+                        },
+                        redo: {
+                            _ = try? store.restoreNoteEditorTransaction(
+                                nodeID: root.id,
+                                note: after
+                            )
+                        }
+                    )
+                }
+            )
+        }
+
+        let coordinator = makeEditor().makeCoordinator()
+        let textView = NodeNoteTextView(usingTextLayoutManager: true)
+        textView.delegate = coordinator
+        textView.typingAttributes = NodeNoteRichTextCodec.baseAttributes
+        coordinator.textView = textView
+        textView.onPasteImage = { data, altText in
+            coordinator.handlePastedImage(
+                data,
+                suggestedAltText: altText
+            )
+        }
+        textView.onFlushPendingChanges = {
+            coordinator.flushPendingChanges()
+        }
+
+        func dragFileImage(
+            color: NSColor,
+            name: String
+        ) throws -> NSPasteboard {
+            let data = try imageData(color: color)
+            let url = directory.appendingPathComponent("\(name).tiff")
+            try data.write(to: url)
+            let item = NSPasteboardItem()
+            item.setString(url.absoluteString, forType: .fileURL)
+            item.setData(data, forType: .tiff)
+            let pasteboard = NSPasteboard(
+                name: NSPasteboard.Name(
+                    "brainstorm-file-image-\(UUID().uuidString)"
+                )
+            )
+            pasteboard.clearContents()
+            #expect(pasteboard.writeObjects([item]))
+            let draggingInfo = NodeNoteTestDraggingInfo(
+                pasteboard: pasteboard,
+                location: NSPoint(x: 1, y: 1)
+            )
+            #expect(textView.draggingEntered(draggingInfo) == .copy)
+            #expect(textView.draggingUpdated(draggingInfo) == .copy)
+            #expect(textView.prepareForDragOperation(draggingInfo))
+            #expect(textView.performDragOperation(draggingInfo))
+            coordinator.parent = makeEditor()
+            coordinator.reconcileInlineImages(currentImages(), in: textView)
+            return pasteboard
+        }
+
+        let firstPasteboard = try dragFileImage(
+            color: .systemBlue,
+            name: "First"
+        )
+        defer { firstPasteboard.clearContents() }
+        #expect(currentImages().count == 1)
+
+        let firstImageID = try #require(currentImages().first?.id)
+        let secondPasteboard = try dragFileImage(
+            color: .systemOrange,
+            name: "Second"
+        )
+        defer { secondPasteboard.clearContents() }
+        #expect(currentImages().count == 2)
+
+        func deleteInlineImage(id: UUID) throws {
+            let imageRange = try #require(
+                NodeNoteInlineImageLayout.attachments(
+                    in: textView.attributedString()
+                ).first {
+                    $0.attachment.noteImageID == id
+                }?.range
+            )
+            #expect(
+                coordinator.textView(
+                    textView,
+                    shouldChangeTextIn: imageRange,
+                    replacementString: ""
+                )
+            )
+            textView.textStorage?.deleteCharacters(in: imageRange)
+            coordinator.textDidChange(
+                Notification(
+                    name: NSText.didChangeNotification,
+                    object: textView
+                )
+            )
+            coordinator.parent = makeEditor()
+            coordinator.reconcileInlineImages(currentImages(), in: textView)
+        }
+
+        let secondImageID = try #require(
+            currentImages().first { $0.id != firstImageID }?.id
+        )
+        try deleteInlineImage(id: secondImageID)
+        #expect(currentImages().map(\.id) == [firstImageID])
+
+        // Returning to a genuinely empty note is the important lifecycle edge:
+        // the next file import must start a fresh note instead of retaining a
+        // stale one-image editor transaction.
+        try deleteInlineImage(id: firstImageID)
+        #expect(currentImages().isEmpty)
+        #expect(store.note(for: root.id) == nil)
+
+        let thirdPasteboard = try dragFileImage(
+            color: .systemGreen,
+            name: "Third"
+        )
+        defer { thirdPasteboard.clearContents() }
+
+        let finalImages = currentImages()
+        #expect(finalImages.count == 1)
+        #expect(finalImages.first?.id != firstImageID)
+        #expect(finalImages.first?.id != secondImageID)
+        #expect(
+            NodeNoteInlineImageLayout.attachments(
+                in: textView.attributedString()
+            ).count == 1
+        )
+    }
+
     private func imageData(color: NSColor) throws -> Data {
         let image = NSImage(size: NSSize(width: 8, height: 8))
         image.lockFocus()
@@ -505,6 +789,53 @@ struct NodeNoteEditorRegressionTests {
         #expect(pasteboard.setData(data, forType: .tiff))
         return pasteboard
     }
+}
+
+@MainActor
+private final class NodeNoteTestDraggingInfo:
+    NSObject,
+    @preconcurrency NSDraggingInfo
+{
+    let draggingPasteboard: NSPasteboard
+    let draggingLocation: NSPoint
+
+    init(pasteboard: NSPasteboard, location: NSPoint) {
+        draggingPasteboard = pasteboard
+        draggingLocation = location
+    }
+
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggedImageLocation: NSPoint { draggingLocation }
+    var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var draggingFormation: NSDraggingFormation = .none
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+
+    override func namesOfPromisedFilesDropped(
+        atDestination dropDestination: URL
+    ) -> [String]? {
+        nil
+    }
+
+    func enumerateDraggingItems(
+        options enumOpts: NSDraggingItemEnumerationOptions = [],
+        for view: NSView?,
+        classes classArray: [AnyClass],
+        searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+        using block: @escaping (
+            NSDraggingItem,
+            Int,
+            UnsafeMutablePointer<ObjCBool>
+        ) -> Void
+    ) {}
+
+    func resetSpringLoading() {}
 }
 
 private extension NodeNote {

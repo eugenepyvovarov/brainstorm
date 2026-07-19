@@ -209,10 +209,8 @@ struct NodeNoteTextEditor: NSViewRepresentable {
         let noteDragTypes: [NSPasteboard.PasteboardType] = [
             .fileURL,
             .URL,
-            .png,
-            .tiff,
             .string,
-        ]
+        ] + NodeNoteTextView.imagePasteboardTypes
         textView.registerForDraggedTypes(
             Array(Set(textView.registeredDraggedTypes + noteDragTypes))
         )
@@ -1985,6 +1983,15 @@ final class NodeNoteTextView: NSTextView {
     static let canonicalMarkdownPasteboardType = NSPasteboard.PasteboardType(
         "ninja.selfhosted.brainstorm.note-markdown"
     )
+    static let imagePasteboardTypes: [NSPasteboard.PasteboardType] = [
+        UTType.image,
+        .png,
+        .tiff,
+        .jpeg,
+        .gif,
+        .heic,
+        .webP,
+    ].map { NSPasteboard.PasteboardType($0.identifier) }
 
     private let noteUndoManager = UndoManager()
     var notePasteboard = NSPasteboard.general
@@ -2106,7 +2113,24 @@ final class NodeNoteTextView: NSTextView {
         return super.draggingEntered(sender)
     }
 
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if canImportImage(from: sender.draggingPasteboard) {
+            return .copy
+        }
+        return super.draggingUpdated(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if canImportImage(from: sender.draggingPasteboard) {
+            return true
+        }
+        return super.prepareForDragOperation(sender)
+    }
+
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard canImportImage(from: sender.draggingPasteboard) else {
+            return super.performDragOperation(sender)
+        }
         let localPoint = convert(sender.draggingLocation, from: nil)
         let insertionLocation = characterIndexForInsertion(at: localPoint)
         if insertionLocation != NSNotFound {
@@ -2120,7 +2144,7 @@ final class NodeNoteTextView: NSTextView {
         if importImage(from: sender.draggingPasteboard) {
             return true
         }
-        return super.performDragOperation(sender)
+        return false
     }
 
     /// Publish TextKit's current attributed string immediately, bypassing the
@@ -2175,9 +2199,7 @@ final class NodeNoteTextView: NSTextView {
                     || importedItemImage
                 continue
             }
-            if let bitmapType = item.availableType(from: [.png, .tiff]),
-               let data = item.data(forType: bitmapType),
-               NSImage(data: data) != nil
+            if let data = imageData(from: item)
             {
                 foundItemImage = true
                 importedItemImage = onPasteImage(data, "Pasted image")
@@ -2212,9 +2234,7 @@ final class NodeNoteTextView: NSTextView {
             return importedImage
         }
 
-        if let bitmapType = pasteboard.availableType(from: [.png, .tiff]),
-           let data = pasteboard.data(forType: bitmapType),
-           NSImage(data: data) != nil
+        if let data = imageData(from: pasteboard)
         {
             return onPasteImage(data, "Pasted image")
         }
@@ -2233,8 +2253,19 @@ final class NodeNoteTextView: NSTextView {
         return onPasteImage(data, "Pasted image")
     }
 
-    private func canImportImage(from pasteboard: NSPasteboard) -> Bool {
-        if pasteboard.availableType(from: [.png, .tiff]) != nil {
+    func canImportImage(from pasteboard: NSPasteboard) -> Bool {
+        if (pasteboard.pasteboardItems ?? []).contains(where: { item in
+            if let rawURL = item.string(forType: .fileURL),
+               let url = URL(string: rawURL),
+               isImageFile(url)
+            {
+                return true
+            }
+            return item.types.contains(where: isImagePasteboardType)
+        }) {
+            return true
+        }
+        if pasteboard.types?.contains(where: isImagePasteboardType) == true {
             return true
         }
         guard let urls = pasteboard.readObjects(
@@ -2243,9 +2274,53 @@ final class NodeNoteTextView: NSTextView {
         ) as? [URL] else {
             return false
         }
-        return urls.contains { url in
-            guard url.isFileURL else { return false }
-            return UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+        return urls.contains(where: isImageFile)
+    }
+
+    private func imageData(from item: NSPasteboardItem) -> Data? {
+        imageData(
+            types: item.types,
+            data: { item.data(forType: $0) }
+        )
+    }
+
+    private func imageData(from pasteboard: NSPasteboard) -> Data? {
+        imageData(
+            types: pasteboard.types ?? [],
+            data: { pasteboard.data(forType: $0) }
+        )
+    }
+
+    private func imageData(
+        types: [NSPasteboard.PasteboardType],
+        data: (NSPasteboard.PasteboardType) -> Data?
+    ) -> Data? {
+        let preferred = Self.imagePasteboardTypes + types
+        var visited = Set<NSPasteboard.PasteboardType>()
+        for type in preferred
+        where visited.insert(type).inserted
+            && types.contains(type)
+            && isImagePasteboardType(type)
+        {
+            guard let candidate = data(type),
+                  NSImage(data: candidate) != nil
+            else {
+                continue
+            }
+            return candidate
         }
+        return nil
+    }
+
+    private func isImagePasteboardType(
+        _ type: NSPasteboard.PasteboardType
+    ) -> Bool {
+        UTType(type.rawValue)?.conforms(to: .image) == true
+    }
+
+    private func isImageFile(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        return UTType(filenameExtension: url.pathExtension)?
+            .conforms(to: .image) == true
     }
 }
