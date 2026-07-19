@@ -15,6 +15,9 @@ struct BrainstormApp: App {
                 .frame(minWidth: 620, minHeight: 480)
         }
         .defaultSize(width: 720, height: 560)
+        .commands {
+            AboutMenuCommands()
+        }
 
         Window("Theme Manager", id: BrainstormWindowID.themeManager) {
             ThemeManagerView()
@@ -27,6 +30,9 @@ struct BrainstormApp: App {
                 )
         }
         .defaultSize(width: 1_280, height: 780)
+        .commands {
+            AboutMenuCommands()
+        }
 
         WindowGroup(id: BrainstormWindowID.map, for: UUID.self) { $documentID in
             if let documentID {
@@ -36,6 +42,7 @@ struct BrainstormApp: App {
         }
         .defaultSize(width: 1000, height: 700)
         .commands {
+            AboutMenuCommands()
             FileMenuCommands(recents: recentDocuments)
 
             CommandMenu("Presentation") {
@@ -81,6 +88,38 @@ struct BrainstormApp: App {
                 .keyboardShortcut("/", modifiers: .command)
             }
         }
+    }
+}
+
+/// Keeps the native About panel while adding a durable sponsorship entry point.
+private struct AboutMenuCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About Brainstorm") {
+                BrainstormAboutPanel.show()
+            }
+        }
+    }
+}
+
+@MainActor
+private enum BrainstormAboutPanel {
+    static func show() {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+
+        let credits = NSMutableAttributedString(string: "Support Brainstorm")
+        credits.addAttributes(
+            [
+                .link: SupportBrainstormDestination.githubSponsors.url,
+                .foregroundColor: NSColor.linkColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .paragraphStyle: paragraphStyle,
+            ],
+            range: NSRange(location: 0, length: credits.length)
+        )
+
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
     }
 }
 

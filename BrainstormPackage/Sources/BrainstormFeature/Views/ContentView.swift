@@ -127,13 +127,25 @@ struct PresentationFullScreenLifecycle: Equatable {
     }
 }
 
+private enum ContentViewSheet: String, Identifiable {
+    case keyboardHelp
+    case supportBrainstorm
+
+    var id: String { rawValue }
+}
+
 public struct ContentView: View {
     let documentID: UUID
     @State private var store: BrainstormStore
     /// Shared focus: `nil` = canvas shortcuts; UUID = that node’s title field.
     @FocusState private var focusedNodeID: UUID?
     @FocusState private var canvasFocused: Bool
-    @State private var showKeyboardHelp = false
+    @State private var presentedSheet: ContentViewSheet?
+    @State private var supportDontShowAgain = false
+    @State private var supportReminderCoordinator =
+        SupportReminderCoordinator.shared
+    @State private var supportEligibilityTask: Task<Void, Never>?
+    @State private var isMainWindowReady = false
     @State private var uiPreferences = BrainstormUIPreferences.shared
     @State private var searchFieldFocused = false
     @FocusState private var searchFocused: Bool
@@ -179,6 +191,21 @@ public struct ContentView: View {
         rootChrome
             .modifier(contentChrome)
             .toolbar { toolbarContent }
+            .sheet(
+                item: $presentedSheet,
+                onDismiss: handleSheetDismissal
+            ) { sheet in
+                switch sheet {
+                case .keyboardHelp:
+                    KeyboardHelpSheet()
+                case .supportBrainstorm:
+                    SupportBrainstormView(
+                        dontShowAgain: $supportDontShowAgain,
+                        openDestination: openSupportDestination,
+                        maybeLater: { presentedSheet = nil }
+                    )
+                }
+            }
             .onChange(of: searchFocused) { _, focused in
                 // Clicking/⌘F into search must not keep a node title field live.
                 if focused, store.isEditing {
@@ -244,11 +271,98 @@ public struct ContentView: View {
             }
     }
 
+    private var keyboardHelpPresented: Binding<Bool> {
+        Binding(
+            get: { presentedSheet == .keyboardHelp },
+            set: { isPresented in
+                if isPresented {
+                    presentKeyboardHelp()
+                } else if presentedSheet == .keyboardHelp {
+                    presentedSheet = nil
+                }
+            }
+        )
+    }
+
+    private func presentKeyboardHelp() {
+        guard presentedSheet == nil else { return }
+        presentedSheet = .keyboardHelp
+    }
+
+    private func requestSupportReminderIfPossible(in suppliedWindow: NSWindow? = nil) {
+        guard isMainWindowReady,
+              presentedSheet == nil,
+              presentationSnapshot == nil,
+              noteEditingNodeID == nil,
+              !isNoteWorkspaceLocked,
+              !showExternalFileConflict,
+              store.lastError == nil,
+              !ExternalDocumentRouter.shared.hasPending,
+              NSApp.isActive,
+              NSApp.modalWindow == nil,
+              let window = suppliedWindow
+                ?? DocumentWindowTabbing.window(for: documentID),
+              window.isVisible,
+              window.isKeyWindow,
+              window.attachedSheet == nil
+        else { return }
+
+        supportEligibilityTask?.cancel()
+        guard supportReminderCoordinator.claimPresentation(for: documentID)
+        else {
+            scheduleSupportEligibilityCheckIfNeeded()
+            return
+        }
+        supportDontShowAgain = false
+        presentedSheet = .supportBrainstorm
+    }
+
+    private func handleSheetDismissal() {
+        dismissSupportReminderIfNeeded()
+    }
+
+    private func dismissSupportReminderIfNeeded() {
+        guard supportReminderCoordinator.presentingDocumentID == documentID
+        else { return }
+        supportReminderCoordinator.dismissPresentation(
+            for: documentID,
+            permanentlySuppress: supportDontShowAgain
+        )
+        supportDontShowAgain = false
+        scheduleSupportEligibilityCheckIfNeeded()
+    }
+
+    private func scheduleSupportEligibilityCheckIfNeeded() {
+        supportEligibilityTask?.cancel()
+        guard !supportReminderCoordinator.isPermanentlySuppressed,
+              let nextEligibilityDate =
+                supportReminderCoordinator.nextEligibilityDate
+        else { return }
+
+        let delay = max(0, nextEligibilityDate.timeIntervalSinceNow)
+        supportEligibilityTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            requestSupportReminderIfPossible()
+        }
+    }
+
+    private func openSupportDestination(
+        _ destination: SupportBrainstormDestination
+    ) {
+        supportReminderCoordinator.open(destination) { url in
+            _ = NSWorkspace.shared.open(url)
+        }
+    }
+
     private var contentChrome: ContentViewChrome {
         ContentViewChrome(
             store: store,
             documentID: documentID,
-            showKeyboardHelp: $showKeyboardHelp,
+            showKeyboardHelp: keyboardHelpPresented,
             searchFocused: $searchFocused,
             onAppear: {
                 store.clearSearch() // search UI disabled for now
@@ -260,13 +374,24 @@ public struct ContentView: View {
                 if ExternalDocumentRouter.shared.hasPending {
                     openExternalDocuments()
                 }
+                Task { @MainActor in
+                    await Task.yield()
+                    isMainWindowReady = true
+                    requestSupportReminderIfPossible()
+                }
             },
             onDisappear: {
+                isMainWindowReady = false
+                dismissSupportReminderIfNeeded()
+                supportEligibilityTask?.cancel()
                 autosaveTask?.cancel()
                 if !isClosing {
                     flushActiveNoteDraft()
                     store.performAutosave()
                 }
+            },
+            onWindowReady: { window in
+                requestSupportReminderIfPossible(in: window)
             },
             onEditingChange: { syncFocusWithEditingState(editingID: $0) },
             onSelectionChange: {
@@ -298,7 +423,7 @@ public struct ContentView: View {
             onDiscardForApplicationTermination: {
                 discardUnsavedChangesForApplicationTermination()
             },
-            onShowHelp: { showKeyboardHelp = true },
+            onShowHelp: presentKeyboardHelp,
             onExternalDocuments: { openExternalDocuments() },
             isPresentationActive: { presentationSnapshot != nil },
             isNoteEditing: { isNoteWorkspaceLocked },
@@ -328,7 +453,7 @@ public struct ContentView: View {
                 KeyboardStatusBar(
                     isEditing: store.isEditing,
                     isEditingNote: noteEditingNodeID != nil,
-                    onShowHelp: { showKeyboardHelp = true }
+                    onShowHelp: presentKeyboardHelp
                 )
             }
         }
@@ -407,7 +532,7 @@ public struct ContentView: View {
                 .accessibilityIdentifier("startPresentation")
 
                 Button("Keyboard", systemImage: "keyboard") {
-                    showKeyboardHelp = true
+                    presentKeyboardHelp()
                 }
                 .focusable(false)
 
@@ -602,6 +727,7 @@ public struct ContentView: View {
         presentationStartNodeID = nil
         DispatchQueue.main.async {
             canvasFocused = true
+            requestSupportReminderIfPossible()
         }
     }
 
@@ -741,6 +867,9 @@ public struct ContentView: View {
     private func finishNoteWorkspaceTransition() {
         isNoteWorkspaceLocked = false
         canvasFocused = true
+        DispatchQueue.main.async {
+            requestSupportReminderIfPossible()
+        }
     }
 
     /// Removes the transient note workspace before replacing the document or
@@ -860,7 +989,7 @@ public struct ContentView: View {
                 new: { openNewWindow() },
                 newTab: { openNewTab() },
                 close: { closeCurrentDocument() },
-                showHelp: { showKeyboardHelp = true }
+                showHelp: presentKeyboardHelp
             )
         )
         return handled ? .handled : .ignored
@@ -1593,6 +1722,7 @@ private struct ContentViewChrome: ViewModifier {
     var searchFocused: FocusState<Bool>.Binding
     let onAppear: () -> Void
     let onDisappear: () -> Void
+    let onWindowReady: (NSWindow) -> Void
     let onEditingChange: (UUID?) -> Void
     let onSelectionChange: () -> Void
     let onAutosave: (_ immediate: Bool) -> Void
@@ -1632,7 +1762,8 @@ private struct ContentViewChrome: ViewModifier {
                         onPrepareForApplicationTermination,
                     discardUnsavedChangesForApplicationTermination:
                         onDiscardForApplicationTermination,
-                    onNewTab: onNewTab
+                    onNewTab: onNewTab,
+                    onWindowReady: onWindowReady
                 )
             )
             .modifier(ContentViewLifecycle(
@@ -1671,9 +1802,6 @@ private struct ContentViewChrome: ViewModifier {
             .navigationTitle(store.documentTitle)
             // App chrome always follows the macOS light/dark appearance.
             // Map palettes pin light/dark only on the canvas (see mainWorkspace).
-            .sheet(isPresented: $showKeyboardHelp) {
-                KeyboardHelpSheet()
-            }
             .modifier(ContentViewErrorAlert(store: store))
     }
 
@@ -1901,6 +2029,7 @@ struct WindowChromeBridge: NSViewRepresentable {
         () -> ApplicationTerminationPreparation
     var discardUnsavedChangesForApplicationTermination: () -> Void
     var onNewTab: (NSWindow?) -> Void
+    var onWindowReady: (NSWindow) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -1911,7 +2040,8 @@ struct WindowChromeBridge: NSViewRepresentable {
                 prepareForApplicationTermination,
             discardUnsavedChangesForApplicationTermination:
                 discardUnsavedChangesForApplicationTermination,
-            onNewTab: onNewTab
+            onNewTab: onNewTab,
+            onWindowReady: onWindowReady
         )
     }
 
@@ -1936,6 +2066,7 @@ struct WindowChromeBridge: NSViewRepresentable {
         context.coordinator.commitTerminationDiscard =
             discardUnsavedChangesForApplicationTermination
         context.coordinator.onNewTab = onNewTab
+        context.coordinator.onWindowReady = onWindowReady
         context.coordinator.attach(to: nsView.window)
     }
 
@@ -1960,6 +2091,7 @@ struct WindowChromeBridge: NSViewRepresentable {
             () -> ApplicationTerminationPreparation
         var commitTerminationDiscard: () -> Void
         var onNewTab: (NSWindow?) -> Void
+        var onWindowReady: (NSWindow) -> Void
         weak var window: NSWindow?
         nonisolated(unsafe) weak var forwardedDelegate: (any NSWindowDelegate)?
         nonisolated(unsafe) weak var forwardedResponder: NSResponder?
@@ -1975,7 +2107,8 @@ struct WindowChromeBridge: NSViewRepresentable {
                 },
             discardUnsavedChangesForApplicationTermination:
                 @escaping () -> Void = {},
-            onNewTab: @escaping (NSWindow?) -> Void
+            onNewTab: @escaping (NSWindow?) -> Void,
+            onWindowReady: @escaping (NSWindow) -> Void = { _ in }
         ) {
             self.documentID = documentID
             self.isDocumentEdited = isDocumentEdited
@@ -1985,6 +2118,7 @@ struct WindowChromeBridge: NSViewRepresentable {
             self.commitTerminationDiscard =
                 discardUnsavedChangesForApplicationTermination
             self.onNewTab = onNewTab
+            self.onWindowReady = onWindowReady
             super.init()
         }
 
@@ -2022,6 +2156,7 @@ struct WindowChromeBridge: NSViewRepresentable {
             if window.isKeyWindow {
                 DocumentSession.shared.setActive(documentID)
             }
+            notifyWindowReadyIfPossible()
         }
 
         private func installInResponderChain(of window: NSWindow) {
@@ -2076,7 +2211,28 @@ struct WindowChromeBridge: NSViewRepresentable {
 
         func windowDidBecomeKey(_ notification: Notification) {
             DocumentSession.shared.setActive(documentID)
+            notifyWindowReadyIfPossible()
             forwardedDelegate?.windowDidBecomeKey?(notification)
+        }
+
+        func windowDidEndSheet(_ notification: Notification) {
+            forwardedDelegate?.windowDidEndSheet?(notification)
+            notifyWindowReadyIfPossible()
+        }
+
+        private func notifyWindowReadyIfPossible() {
+            guard let window else { return }
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self,
+                      let window,
+                      self.window === window,
+                      window.isVisible,
+                      window.isKeyWindow,
+                      window.attachedSheet == nil,
+                      NSApp.modalWindow == nil
+                else { return }
+                self.onWindowReady(window)
+            }
         }
 
         func windowDidFailToEnterFullScreen(_ window: NSWindow) {

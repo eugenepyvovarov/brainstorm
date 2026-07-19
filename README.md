@@ -53,6 +53,17 @@ return after relaunch.
 
 Inspector visibility, focus mode, and note-marker visibility are app-wide workspace preferences. Brainstorm restores these choices when it launches and keeps them when you open or switch between `.bs` files; they never modify the map contents or make a document dirty.
 
+Brainstorm may occasionally show a native **Support Brainstorm** sheet after a map window is ready.
+Following [@selfhosted_ai on X](https://x.com/selfhosted_ai) is the primary action, with optional
+GitHub Sponsors, Patreon, and Buy Me a Coffee links for supporting open-source development. Opening
+any link leaves the sheet and reminder schedule unchanged. Choosing **Maybe later**, closing, or
+dismissing the sheet postpones it for 14 days; select **Don’t show this again** before dismissing to
+disable it permanently until Brainstorm’s preferences are reset. The app coordinates the reminder
+across document windows so it never appears more than once at the same time or interrupts another
+sheet, alert, restoration flow, or important startup action. You can also open **About Brainstorm**
+from the app menu and choose **Support Brainstorm** to visit the GitHub Sponsors page at any time;
+this manual link does not change the reminder schedule.
+
 ## `.bs` file format
 
 `.bs` files are human-readable JSON. New saves use format v3 and sparse encoding: empty child lists, empty media and notes, default styles, and default expanded state are omitted, while custom styling, media, typed notes, manual positions, stable UUIDs, and document themes remain explicit. Existing v1/v2 files remain readable and are upgraded to v3 the next time Brainstorm or the CLI saves them. Format v3 prevents an older Brainstorm release that does not understand notes from silently discarding them.
