@@ -85,8 +85,18 @@ struct HTMLExportRegressionTests {
             .components(separatedBy: "}")
             .first
         #expect(
-            presentationStageRule?.contains("touch-action: pan-y;") == true
+            presentationStageRule?.contains("touch-action: none;") == true
         )
+        #expect(html.contains("const enterPresentationFreeLook"))
+        #expect(html.contains("const panPresentationByScreenDelta"))
+        #expect(html.contains("const zoomPresentationAtClient"))
+        #expect(html.contains("const refocusPresentationOnCurrent"))
+        #expect(
+            html.contains(
+                "Any visible node is a jump target so free-look pan/zoom can"
+            )
+        )
+        #expect(!html.contains("presentationSwipe"))
         #expect(html.contains("const slideIndexByElement = new WeakMap();"))
         #expect(html.contains("const slideByNodeID = new Map();"))
         #expect(html.contains("const childrenByParentID = new Map();"))
@@ -98,11 +108,95 @@ struct HTMLExportRegressionTests {
             )
         )
         #expect(html.contains("100dvh"))
+        #expect(html.contains("#presentation-progress {"))
+        #expect(html.contains("white-space: nowrap;"))
+        #expect(!html.contains("min-width: 3.6em;"))
 
         // The regression fixes must not replace the document theme accent
         // used by the presentation edge controls and attribution mark.
         #expect(html.contains("--accent: #BD93F9;"))
         #expect(html.contains("color: var(--accent);"))
         #expect(html.contains("fill: var(--accent);"))
+    }
+
+    @Test func deepSiblingRoutesTravelDirectlyWithoutParentDetour() throws {
+        let leftID = UUID(uuidString: "00000000-0000-0000-0000-000000000701")!
+        let rightID = UUID(uuidString: "00000000-0000-0000-0000-000000000702")!
+        let root = BrainstormNode(
+            title: "Root",
+            children: [
+                BrainstormNode(
+                    title: "Branch",
+                    children: [
+                        BrainstormNode(
+                            title: "Parent",
+                            children: [
+                                BrainstormNode(id: leftID, title: "Deep left"),
+                                BrainstormNode(id: rightID, title: "Deep right"),
+                            ]
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let data = try BrainstormExporter.data(
+            root: root,
+            theme: .dracula,
+            colorScheme: .dark,
+            format: .html,
+            options: BrainstormExportOptions(htmlInitialMode: .presentation)
+        )
+        let html = String(decoding: data, as: UTF8.self)
+
+        // Sequential presentation pans straight between node centers and
+        // never retraces hierarchy/connection routes through parents.
+        #expect(html.contains(#"data-node-id="\#(leftID.uuidString)""#))
+        #expect(html.contains(#"data-next-relation-kind="sibling""#))
+        #expect(html.contains("const presentationCameraRoute = (source, target)"))
+        #expect(html.contains("return [from, to];"))
+        #expect(!html.contains("const smoothBranchRoute"))
+        #expect(!html.contains("const parseSpatialRoute"))
+        #expect(
+            html.contains(
+                "Always interpolate a straight chord between the current and"
+            )
+        )
+        #expect(html.contains("const enterPresentationFreeLook"))
+        #expect(html.contains("activeCameraAnimation"))
+        #expect(html.contains("suppressSlideClicksDuringTravel"))
+    }
+
+    @Test func noteFlipHidesMirroredTitleOnBackFace() throws {
+        let root = BrainstormNode(
+            title: "Root",
+            children: [
+                BrainstormNode(
+                    title: "Noted",
+                    note: NodeNote(bodyMarkdown: "Hidden until flipped")
+                ),
+            ]
+        )
+        let data = try BrainstormExporter.data(
+            root: root,
+            theme: .dracula,
+            colorScheme: .dark,
+            format: .html
+        )
+        let html = String(decoding: data, as: UTF8.self)
+
+        #expect(html.contains("transform: rotateY(0deg) translateZ(1px);"))
+        #expect(html.contains("translateZ(1px)"))
+        #expect(
+            html.contains(
+                #".presentation-slide[data-face="note"] .presentation-node-front"#
+            )
+        )
+        #expect(html.contains(#".node[data-face="note"] .map-node-front"#))
+        #expect(
+            html.contains(
+                "-webkit-transform-style: preserve-3d;"
+            )
+        )
+        #expect(html.contains("-webkit-backface-visibility: hidden;"))
     }
 }

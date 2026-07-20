@@ -75,10 +75,13 @@ brainstorm export launch.bs --format html --notes all --presentation --output la
 brainstorm export launch.bs --format pdf --output launch.pdf
 brainstorm export launch.bs --format markdown --notes none --output public-outline.md
 
-# Export the complete tree as text, including descendants of collapsed nodes.
+# Every export includes the complete tree (descendants under folded canvas
+# branches). Fold state is live-canvas only and is not applied to exports.
 brainstorm export launch.bs --format markdown --output launch.zip
 brainstorm export launch.bs --format mermaid --output launch.mmd
 brainstorm export launch.bs --format plantuml --output launch.puml
+brainstorm export launch.bs --format html --output launch.html
+brainstorm export launch.bs --format png --output launch.png
 
 # Stream any text or binary export to stdout (this example emits ZIP bytes).
 brainstorm export launch.bs --format markdown --output -
@@ -275,8 +278,10 @@ brainstorm export launch.bs --format html --notes all --presentation \
   --output launch-presentation.html
 ```
 
-The presentation starts with root-first depth-first node preorder over the complete tree, including
-descendants below collapsed canvas nodes. Every non-empty note included by the export policy adds a
+Every export (HTML map, HTML presentation, PNG, PDF, Markdown, Mermaid, PlantUML) lays out or
+walks the complete stored tree. Folded branches remain a live-canvas detail of the `.bs` file and
+do not hide descendants from any export. The presentation starts with root-first depth-first node
+preorder over that complete tree. Every non-empty note included by the export policy adds a
 separate step immediately after its node, producing `node → note back → next depth-first node`;
 previous navigation retraces the same steps exactly—`next node → previous note back → previous
 node title`—and progress counts both node and note steps.
@@ -296,8 +301,9 @@ only while crossing a long branch route. Its camera, grid, nodes, and connectors
 animation-frame timeline; focus moves to the destination so successive arrow-key steps continue.
 Normal motion uses the full 3D flip. Reduce Motion preserves the title/note relationship with a
 quick crossfade without perspective. At rest, HTML uses a device-pixel aligned 2D camera, removes
-permanent compositor hints, and limits the current-node drop shadow to
-the vector shape so Safari does not raster-scale the title. During node-to-node travel, both the
+permanent compositor hints, and moves the actual focused DOM node into a fixed screen-space focus
+layer at its final pixel dimensions. This avoids inverse child scaling and keeps deep focused text
+sharp in Safari. Before node-to-node travel, the same element returns to the map world so both the
 native app and HTML viewer animate connector lines and each complete rendered node surface through
 one shared camera timeline; text, shape, media, and shadow do not re-layout on independent
 animation clocks. Pixel alignment resumes only after the camera settles. The note back is counter-scaled to a
@@ -313,12 +319,12 @@ Home, End, and the on-screen controls navigate the step sequence; Escape returns
 In HTML presentation mode, safe-area-aware Previous and Next chevrons appear midway along the left
 and right edges only when that direction has another node or note step. Their 52-point compact-screen
 touch targets support iPhone navigation without a keyboard, and the unavailable direction is hidden
-at the sequence boundary. Any visible node is a direct click/tap jump target; navigation then
-continues from its ordinary place in the complete node/note step sequence. Cross-branch camera
-travel follows one continuous curve toward the common ancestor rather than landing on each
-intermediate parent. The passive note marker uses a bounded zoom-aware size and inset so it stays
-legible and clear of the node corner at every focused scale.
-`#node=<uuid>` opens that node’s presentation step.
+at the sequence boundary. Drag to pan, mouse-wheel or pinch to zoom, and use `+`/`-` or `0`/`F` to
+zoom or re-focus the current step. Any visible node is a direct click/tap jump target after free
+look; navigation then continues from its ordinary place in the complete node/note step sequence.
+Sequential next/previous steps pan in a straight line between node centers. The passive note marker
+uses a bounded zoom-aware size and inset so it stays legible and clear of the node corner at every
+focused scale. `#node=<uuid>` opens that node’s presentation step.
 
 HTML is self-contained except for optional video playback. Images, theme, layout, CSS, and
 JavaScript are embedded. A compact fixed inline SVG uses the Brainstorm app icon’s mosaic and
@@ -354,6 +360,7 @@ link; serving the same file unchanged activates the embedded player.
 - Closing a saved map records its standalone window size and location in that map's Recent entry. Reopening it from Recent restores that geometry, clamped to the currently visible displays; tab opens retain their parent window geometry.
 - Use the toolbar’s **Theme** menu → **Manage Themes…** to browse the compact native Zed Theme Registry inside Brainstorm. The catalog is cached on disk for fast launches and stale offline fallback; a selected extension archive is cached by extension version. After choosing a registry result, Up/Down selects the previous or next result. Brainstorm reads only safe `themes/*.json` files, including native Zed JSON5 comments and trailing commas, and renders a real one-root, two-child map from the selected palette. Import retains every selected source file unchanged in Application Support/Brainstorm/Zed Themes; manual import accepts the same format. An imported source can expose multiple variants: remove variants individually, with the unchanged source deleted only after its final variant is removed; importing the source again restores all variants. Built-in themes cannot be deleted. Theme imports, removals, and default changes refresh open editors immediately.
 - Canvas zoom keeps the map point beneath the pointer fixed for Command-scroll and trackpad magnification. Toolbar and keyboard zoom use the most recent pointer location when available, falling back to the viewport center.
+- The native canvas renders an overscanned visible working set instead of instantiating every off-screen node during pan and zoom. Collapsing a branch compacts visible sibling geometry and canvas bounds, temporarily auto-packing the folded card vertically instead of retaining an expanded-layout offset; reopening it restores that saved offset. All exports (HTML, PNG, PDF, Markdown, Mermaid, PlantUML) always use the complete stored tree through the all-descendants layout policy; fold state is not applied outside the live `.bs` canvas.
 - The macOS app remembers inspector visibility, focus mode, and the Notes layer as app-wide workspace preferences across launches and `.bs` files. It defaults off. When on, every non-empty note receives a very small, low-emphasis, non-interactive SF Symbol `note.text` inside its node’s top-right corner and hover/selection may reveal the transient **+ Note**/**Note** action, all without adding preview cards beneath nodes or changing layout spacing, regardless of the note's legacy saved export visibility. The symbol uses the active theme tint with no circle or button chrome. These settings are UI state, not document content, so changing them never dirties a map. The node context menu and ⌥⌘N remain available with the visual layer off; notes are never edited from the presence symbol or inspector.
 - The recurring native **Support Brainstorm** sheet is app-wide rather than document content. It waits for a ready key map window and never competes with another sheet, alert, restoration flow, note editor, or presentation. **Maybe later**, closing, and ordinary dismissal store the next eligible date 14 calendar days later. **Don’t show this again** permanently suppresses it until preferences are reset. Opening the X, GitHub Sponsors, Patreon, or Buy Me a Coffee URL has no effect on presentation, recurrence, or opt-out state. A single main-actor coordinator owns the active document claim, so automation or tests must not model the reminder independently per window. The standard **About Brainstorm** panel also contains a **Support Brainstorm** link to GitHub Sponsors; opening it is always available and never mutates reminder state.
 - In the macOS app, plain arrows navigate the tree and ⌘+Arrow still reorders or changes depth outside title editing. While editing a title, modifier arrows do not change the tree; Ctrl+Left/Right remains native word/caret navigation and Ctrl+Up/Down is ignored.
@@ -364,8 +371,9 @@ link; serving the same file unchanged activates the embedded player.
 - HTML export is a self-contained, read-only vector/DOM viewer. It writes branches as inline SVG
   paths and nodes as HTML elements at their exact Brainstorm layout positions on a continuous themed
   canvas and grid; it does not embed a full-map screenshot or PNG. Node-local media stays embedded,
-  and the export preserves the document theme, manual positions, collapsed state, selected note
-  layer, and full presentation sequence. It provides cursor-anchored wheel zoom, one-finger or mouse
+  and the export preserves the document theme, manual positions, fully expanded map geometry for
+  every stored node, selected note layer, and full presentation sequence. Folded canvas state from
+  the `.bs` file is not applied. It provides cursor-anchored wheel zoom, one-finger or mouse
   drag-to-pan, and midpoint-anchored two-finger pinch zoom. Double-click, double-tap, or press `F` to
   fit the map, press `0` to restore 100%, and use `+`/`-` to zoom from the keyboard. It contains no
   `.bs` source JSON and has no remote code/styling dependency. YouTube playback is the only optional

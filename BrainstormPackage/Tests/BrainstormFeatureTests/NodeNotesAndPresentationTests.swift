@@ -2870,10 +2870,27 @@ struct NodeNotesAndPresentationTests {
         #expect(html.contains("cap >= floor"))
         #expect(html.contains("return Math.min(base, bestCap ?? floor);"))
         #expect(html.contains("const navigatePresentationTo"))
-        #expect(html.contains("const smoothBranchRoute"))
+        #expect(html.contains("const presentationCameraRoute"))
+        #expect(!html.contains("const smoothBranchRoute"))
         #expect(
             html.contains(
-                "const cameraRoute = smoothBranchRoute(route, routePivot);"
+                "Do not retrace hierarchy routes that"
+            )
+        )
+        #expect(
+            html.contains(
+                "const cameraRoute = presentationCameraRoute(source, target);"
+            )
+        )
+        #expect(html.contains("transform: rotateY(0deg) translateZ(1px);"))
+        #expect(
+            html.contains(
+                ".presentation-slide[data-face=\"note\"] .presentation-node-front"
+            )
+        )
+        #expect(
+            html.contains(
+                ".node[data-face=\"note\"] .map-node-front"
             )
         )
         #expect(
@@ -2891,6 +2908,20 @@ struct NodeNotesAndPresentationTests {
         #expect(html.contains(#"`Next slide: ${title}. ${relation || ""}`"#))
         #expect(html.contains(#"id="presentation-world""#))
         #expect(html.contains(#"id="presentation-world-branches""#))
+        #expect(html.contains(#"id="presentation-focus-layer""#))
+        #expect(html.contains("const promoteCurrentSlideToFocus"))
+        #expect(html.contains("const restoreFocusedSlideToWorld"))
+        #expect(
+            html.contains(
+                #"slide.style.transform = "translate(-50%, -50%)";"#
+            )
+        )
+        #expect(
+            html.contains(
+                #""brainstorm:presentation-camera-settled""#
+            )
+        )
+        #expect(!html.contains("cloneNode("))
         #expect(html.contains(#"id="presentation-previous-button""#))
         #expect(html.contains(#"id="presentation-next-button""#))
         #expect(html.contains(#"aria-label="Previous presentation step""#))
@@ -2944,8 +2975,13 @@ struct NodeNotesAndPresentationTests {
             )
         )
         #expect(html.contains("const setCameraFrame"))
-        #expect(html.contains("const presentationOverviewScale"))
+        #expect(!html.contains("const presentationOverviewScale"))
         #expect(html.contains("const presentationCameraFrames"))
+        #expect(
+            html.contains(
+                "Always interpolate a straight chord between the current and"
+            )
+        )
         #expect(html.contains("const stepCameraAnimation"))
         #expect(
             html.contains(
@@ -2986,11 +3022,10 @@ struct NodeNotesAndPresentationTests {
         #expect(!html.contains("width: min(760px, 72vw)"))
         #expect(html.contains(":focus-visible"))
         #expect(html.contains(#"(event.key === "Enter" || event.key === " ")"#))
-        #expect(
-            html.contains(
-                #"previewTarget.dataset.position === "previous" ? -1 : 1"#
-            )
-        )
+        #expect(html.contains("const enterPresentationFreeLook"))
+        #expect(html.contains("const panPresentationByScreenDelta"))
+        #expect(html.contains("const zoomPresentationAtClient"))
+        #expect(html.contains("if (index >= 0) navigatePresentationTo(index);"))
         #expect(html.contains("const updateSlideDescendantFocus"))
         #expect(
             html.contains(
@@ -2999,7 +3034,7 @@ struct NodeNotesAndPresentationTests {
         )
         #expect(html.contains("updateSlideDescendantFocus(slide, isCurrent);"))
         #expect(html.contains(#"presentationStage.addEventListener("pointerdown""#))
-        #expect(html.contains(#"navigatePresentation(dx < 0 ? 1 : -1)"#))
+        #expect(!html.contains(#"navigatePresentation(dx < 0 ? 1 : -1)"#))
         #expect(html.contains(#"if (index === currentSlideIndex)"#))
         #expect(html.contains(#"navigatePresentation(1);"#))
         #expect(html.contains("if (interactiveTarget && !previewTarget) return;"))
@@ -3043,6 +3078,184 @@ struct NodeNotesAndPresentationTests {
         #expect(html.contains("fill: var(--accent);"))
         #expect(html.contains(".presentation-edge-navigation {"))
         #expect(html.contains("color: var(--accent);"))
+    }
+
+    @Test func htmlPresentationPromotesDeepFocusedNodeWithoutScaleRaster() async throws {
+        let deepID = UUID(
+            uuidString: "00000000-0000-4000-8000-000000000704"
+        )!
+        let root = BrainstormNode(
+            id: UUID(
+                uuidString: "00000000-0000-4000-8000-000000000701"
+            )!,
+            title: "Root",
+            children: [
+                BrainstormNode(
+                    id: UUID(
+                        uuidString: "00000000-0000-4000-8000-000000000702"
+                    )!,
+                    title: "Level one",
+                    children: [
+                        BrainstormNode(
+                            id: UUID(
+                                uuidString:
+                                    "00000000-0000-4000-8000-000000000703"
+                            )!,
+                            title: "Level two",
+                            children: [
+                                BrainstormNode(
+                                    id: deepID,
+                                    title: "Identical sharp label"
+                                ),
+                            ]
+                        ),
+                    ]
+                ),
+            ]
+        )
+        let html = try htmlString(
+            root: root,
+            options: BrainstormExportOptions(
+                noteInclusion: .none,
+                htmlInitialMode: .presentation
+            )
+        )
+        // A detached WKWebView does not advance requestAnimationFrame. Replace
+        // only the test copy's final animation scheduling call with an
+        // immediate settle, then trigger its real Present button handler.
+        let deepInitialHTML = html
+            .replacingOccurrences(
+                of: "let currentSlideIndex = 0;",
+                with: "let currentSlideIndex = 3;"
+            )
+            .replacingOccurrences(
+                of: "requestAnimationFrame(stepCameraAnimation)",
+                with: """
+                (settleCameraFrame(destination, destinationScale), 0)
+                """
+            )
+        let originalScriptStart = try #require(html.range(of: "<script>"))
+        let originalScriptEnd = try #require(
+            html.range(
+                of: "</script>",
+                range: originalScriptStart.upperBound..<html.endIndex
+            )
+        )
+        let originalScript = html[
+            originalScriptStart.upperBound..<originalScriptEnd.lowerBound
+        ]
+        let modifiedScriptStart = try #require(
+            deepInitialHTML.range(of: "<script>")
+        )
+        let modifiedScriptEnd = try #require(
+            deepInitialHTML.range(
+                of: "</script>",
+                range: modifiedScriptStart.upperBound..<deepInitialHTML.endIndex
+            )
+        )
+        let modifiedScript = deepInitialHTML[
+            modifiedScriptStart.upperBound..<modifiedScriptEnd.lowerBound
+        ]
+        let originalHash = Data(
+            SHA256.hash(data: Data(originalScript.utf8))
+        ).base64EncodedString()
+        let modifiedHash = Data(
+            SHA256.hash(data: Data(modifiedScript.utf8))
+        ).base64EncodedString()
+        let executableHTML = deepInitialHTML.replacingOccurrences(
+            of: "script-src 'sha256-\(originalHash)'",
+            with: "script-src 'sha256-\(modifiedHash)'"
+        )
+        let webView = WKWebView(
+            frame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "brainstorm-presentation-focus-\(UUID().uuidString).html"
+            )
+        try Data(executableHTML.utf8).write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        webView.loadFileURL(
+            fileURL,
+            allowingReadAccessTo: fileURL.deletingLastPathComponent()
+        )
+
+        var viewerLoaded = false
+        for _ in 0..<150 {
+            viewerLoaded = (
+                try? await webView.evaluateJavaScript(
+                    """
+                    document.readyState === "complete"
+                      && document.getElementById(
+                        "presentation-mode-button"
+                      ) !== null
+                    """
+                ) as? Bool
+            ) == true
+            if viewerLoaded { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(viewerLoaded)
+        _ = try await webView.evaluateJavaScript(
+            "document.getElementById('presentation-mode-button').click()"
+        )
+
+        var measurements: [String] = []
+        for _ in 0..<180 {
+            let value = try? await webView.evaluateJavaScript(
+                """
+                (() => {
+                  const slide = document.querySelector(
+                    '.presentation-slide[data-node-id="\(deepID.uuidString)"]'
+                  );
+                  if (!slide) return "";
+                  const matrix = new DOMMatrixReadOnly(
+                    getComputedStyle(slide).transform
+                  );
+                  const rect = slide.getBoundingClientRect();
+                  const ratio = window.devicePixelRatio || 1;
+                  const centerError = Math.max(
+                    Math.abs(rect.left * ratio - Math.round(rect.left * ratio)),
+                    Math.abs(rect.top * ratio - Math.round(rect.top * ratio))
+                  );
+                  return [
+                    slide.parentElement?.id || "",
+                    slide.dataset.position || "",
+                    slide.style.transform,
+                    matrix.a,
+                    matrix.d,
+                    rect.width,
+                    Number(slide.dataset.mapWidth) || 0,
+                    centerError,
+                  ].join("|");
+                })()
+                """
+            ) as? String
+            measurements = value?
+                .split(separator: "|", omittingEmptySubsequences: false)
+                .map(String.init) ?? []
+            if measurements.first == "presentation-focus-layer" {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        #expect(measurements.count == 8)
+        let measured = try #require(
+            measurements.count == 8 ? measurements : nil
+        )
+        #expect(measured[0] == "presentation-focus-layer")
+        #expect(measured[1] == "current")
+        #expect(!measured[2].contains("scale("))
+        #expect(abs((Double(measured[3]) ?? 0) - 1) < 0.001)
+        #expect(abs((Double(measured[4]) ?? 0) - 1) < 0.001)
+        #expect(
+            (Double(measured[5]) ?? 0)
+                > (Double(measured[6]) ?? 0)
+        )
+        #expect((Double(measured[7]) ?? 1) < 0.01)
+
+        webView.stopLoading()
     }
 
     @Test func htmlVisibleAllAndNoneDoNotLeakExcludedPayloads() throws {

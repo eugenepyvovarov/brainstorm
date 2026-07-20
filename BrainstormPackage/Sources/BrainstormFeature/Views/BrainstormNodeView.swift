@@ -178,7 +178,7 @@ struct BrainstormNodeView: View {
 
     @ViewBuilder
     private var matchedNodeCard: some View {
-        if let noteFocusNamespace {
+        if let noteFocusNamespace, isSelected || isHovered {
             nodeCard
                 .matchedGeometryEffect(
                     id: layoutNode.id,
@@ -206,6 +206,7 @@ struct BrainstormNodeView: View {
                 isSelected: isSelected,
                 isDropTarget: isDropTarget,
                 isSearchMatch: isSearchMatch,
+                isHovered: isHovered,
                 isRoot: isRoot,
                 borderColor: borderColor,
                 borderWidth: borderWidth,
@@ -215,7 +216,7 @@ struct BrainstormNodeView: View {
             ))
             .shadow(
                 color: shadowColor,
-                radius: isSelected || isDropTarget || isFreeDragging ? 10 : 3,
+                radius: shadowRadius,
                 y: isSelected ? 3 : 1
             )
             .scaleEffect(isFreeDragging ? 1.03 : 1)
@@ -514,7 +515,16 @@ struct BrainstormNodeView: View {
         if isSelected || isDropTarget || isFreeDragging {
             return theme.selectionColor.opacity(0.35)
         }
-        return Color.black.opacity(paintsAsDark ? 0.45 : 0.08)
+        if isHovered || isRoot {
+            return Color.black.opacity(paintsAsDark ? 0.36 : 0.07)
+        }
+        return .clear
+    }
+
+    private var shadowRadius: CGFloat {
+        if isSelected || isDropTarget || isFreeDragging { return 10 }
+        if isHovered || isRoot { return 3 }
+        return 0
     }
 }
 
@@ -531,6 +541,7 @@ private struct NodeChromeModifier: ViewModifier {
     let isSelected: Bool
     let isDropTarget: Bool
     let isSearchMatch: Bool
+    let isHovered: Bool
     let isRoot: Bool
     let borderColor: Color
     let borderWidth: CGFloat
@@ -578,9 +589,10 @@ private struct NodeChromeModifier: ViewModifier {
     private var glassStyle: Glass {
         if isDropTarget { return .regular.tint(selectionColor.opacity(0.45)).interactive() }
         if isSelected { return .regular.tint(selectionColor.opacity(0.3)).interactive() }
-        if isSearchMatch { return .regular.tint(searchHighlight.opacity(0.55)).interactive() }
-        if isRoot { return .regular.tint(selectionColor.opacity(0.12)).interactive() }
-        return .regular.interactive()
+        if isHovered { return .regular.interactive() }
+        if isSearchMatch { return .regular.tint(searchHighlight.opacity(0.55)) }
+        if isRoot { return .regular.tint(selectionColor.opacity(0.12)) }
+        return .regular
     }
 
     private var fallbackFill: Color {

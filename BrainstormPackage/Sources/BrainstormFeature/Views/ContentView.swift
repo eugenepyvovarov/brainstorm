@@ -488,27 +488,9 @@ public struct ContentView: View {
                 }
                 .focusable(false)
 
-                Text("\(Int(store.zoomScale * 100))%")
-                    .font(.caption.monospacedDigit())
-                    .frame(minWidth: 36)
-                    .foregroundStyle(.secondary)
+                CanvasZoomReadout(viewport: store.viewport)
 
-                Button {
-                    store.zoomReset()
-                } label: {
-                    Text("1:1")
-                        .font(.caption.monospacedDigit().weight(.medium))
-                        .padding(.horizontal, 4)
-                        .contentShape(Rectangle())
-                }
-                // A regular text button gets its own macOS toolbar capsule and
-                // visually splits this ToolbarItemGroup. Keep it inside the shared
-                // zoom group while retaining a useful click target.
-                .buttonStyle(.plain)
-                .accessibilityLabel("Actual Size")
-                .accessibilityIdentifier("zoomActualSize")
-                .disabled(abs(store.zoomScale - 1) < 0.001)
-                .focusable(false)
+                CanvasActualSizeButton(viewport: store.viewport)
 
                 Button("Zoom In", systemImage: "plus.magnifyingglass") {
                     store.zoomIn()
@@ -748,6 +730,7 @@ public struct ContentView: View {
             HStack(spacing: 0) {
                 BrainstormCanvasView(
                     store: store,
+                    viewport: store.viewport,
                     focusedNodeID: $focusedNodeID,
                     noteEditingNodeID: noteEditingNodeID,
                     isInteractionLocked: isNoteWorkspaceLocked,
@@ -1366,6 +1349,42 @@ public struct ContentView: View {
         DocumentSession.shared.closeDocument(documentID)
         BrainstormStore.releaseShared(documentID: documentID)
         DocumentWindowTabbing.unregister(documentID: documentID, window: window)
+    }
+}
+
+/// Small, isolated observers keep continuous viewport updates from
+/// invalidating the complete document workspace.
+private struct CanvasZoomReadout: View {
+    @Bindable var viewport: CanvasViewportState
+
+    var body: some View {
+        Text("\(Int(viewport.zoomScale * 100))%")
+            .font(.caption.monospacedDigit())
+            .frame(minWidth: 36)
+            .foregroundStyle(.secondary)
+    }
+}
+
+private struct CanvasActualSizeButton: View {
+    @Bindable var viewport: CanvasViewportState
+
+    var body: some View {
+        Button {
+            viewport.zoomReset()
+        } label: {
+            Text("1:1")
+                .font(.caption.monospacedDigit().weight(.medium))
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
+        }
+        // A regular text button gets its own macOS toolbar capsule and
+        // visually splits the ToolbarItemGroup. Keep it inside the shared
+        // zoom group while retaining a useful click target.
+        .buttonStyle(.plain)
+        .accessibilityLabel("Actual Size")
+        .accessibilityIdentifier("zoomActualSize")
+        .disabled(abs(viewport.zoomScale - 1) < 0.001)
+        .focusable(false)
     }
 }
 

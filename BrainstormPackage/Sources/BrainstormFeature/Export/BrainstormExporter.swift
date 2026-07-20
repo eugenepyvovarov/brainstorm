@@ -192,10 +192,15 @@ public enum BrainstormExporter {
         // Notes are an interactive/document layer. Raster and PDF exports are
         // intentionally the clean mind map only; HTML and Markdown provide the
         // note-aware export experiences.
+        //
+        // Folded branches are a live-canvas concern only. Every visual export
+        // lays out the complete stored tree so PNG/PDF/HTML always include
+        // descendants that remain collapsed in the `.bs` document.
         let layoutNoteInclusion = layoutNoteInclusion(for: format)
         let layout = LayoutEngine().layout(
             root: root,
-            noteInclusion: layoutNoteInclusion
+            noteInclusion: layoutNoteInclusion,
+            placementPolicy: .allDescendants
         )
         guard layout.contentSize.width > 0, layout.contentSize.height > 0 else {
             throw BrainstormExportError.invalidCanvasSize

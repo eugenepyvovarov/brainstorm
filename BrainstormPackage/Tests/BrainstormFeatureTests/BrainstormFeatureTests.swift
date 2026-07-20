@@ -1085,6 +1085,27 @@ struct BrainstormStoreTests {
         }
     }
 
+    @Test func viewportCullingUsesDocumentCoordinatesAndScreenOverscan() {
+        let visible = CanvasViewportCulling.visibleDocumentRect(
+            viewportSize: CGSize(width: 800, height: 600),
+            panOffset: CGSize(width: -400, height: -200),
+            zoom: 2,
+            screenOverscan: 0
+        )
+        #expect(visible == CGRect(x: 200, y: 100, width: 400, height: 300))
+
+        let overscanned = CanvasViewportCulling.visibleDocumentRect(
+            viewportSize: CGSize(width: 800, height: 600),
+            panOffset: CGSize(width: -400, height: -200),
+            zoom: 2,
+            screenOverscan: 100
+        )
+        #expect(
+            overscanned
+                == CGRect(x: 150, y: 50, width: 500, height: 400)
+        )
+    }
+
     @Test func titlesPreserveNewlinesOnLiveApplyAndCommit() {
         let store = BrainstormStore(startEditing: false)
         store.beginEditing(id: store.root.id, seed: "Line one")
@@ -1848,7 +1869,7 @@ struct BrainstormExporterTests {
         #expect(!html.contains("<canvas"))
     }
 
-    @Test func htmlMapOmitsCollapsedDescendantsButPresentationIncludesThem() throws {
+    @Test func visualExportsExpandCollapsedBranches() throws {
         let rootID = UUID(uuidString: "30000000-0000-0000-0000-000000000001")!
         let childID = UUID(uuidString: "30000000-0000-0000-0000-000000000002")!
         let hiddenID = UUID(uuidString: "30000000-0000-0000-0000-000000000003")!
@@ -1864,28 +1885,31 @@ struct BrainstormExporterTests {
                 ),
             ]
         )
-        let layout = LayoutEngine().layout(root: root)
-        let data = try BrainstormExporter.data(
+        let liveLayout = LayoutEngine().layout(root: root)
+        let expandedLayout = LayoutEngine().layout(
+            root: root,
+            placementPolicy: .allDescendants
+        )
+        #expect(liveLayout.nodes.map(\.id) == [rootID, childID])
+        #expect(
+            expandedLayout.nodes.map(\.id)
+                == [rootID, childID, hiddenID]
+        )
+
+        let htmlData = try BrainstormExporter.data(
             root: root,
             theme: .vsCodeLight,
             colorScheme: .light,
             format: .html
         )
-        let html = try #require(String(data: data, encoding: .utf8))
-        let expandedLayout = LayoutEngine().layout(
-            root: root,
-            placementPolicy: .allDescendants
-        )
-
-        #expect(layout.nodes.map(\.id) == [rootID, childID])
+        let html = try #require(String(data: htmlData, encoding: .utf8))
         let mapNodeArticles = openingTags(named: "article", in: html)
             .filter { hasClass("node", in: $0) }
-        #expect(mapNodeArticles.count == 2)
-        #expect(html.contains(rootID.uuidString))
-        #expect(html.contains(childID.uuidString))
-        #expect(!mapNodeArticles.contains {
+        #expect(mapNodeArticles.count == 3)
+        #expect(mapNodeArticles.contains {
             attribute(named: "data-node-id", in: $0) == hiddenID.uuidString
         })
+        #expect(html.contains(#"data-expanded="true""#))
         let hiddenSlide = try openingTag(
             named: "section",
             matchingAttribute: "data-node-id",
@@ -1894,13 +1918,30 @@ struct BrainstormExporterTests {
         )
         #expect(hasClass("presentation-slide", in: hiddenSlide))
         #expect(html.contains(">Hidden</span>"))
+        // Map and presentation share one fully expanded edge set.
         let visibleEdgePaths = openingTags(named: "path", in: html).filter {
             attribute(named: "data-edge-from", in: $0) != nil
         }
-        #expect(
-            visibleEdgePaths.count
-                == layout.edges.count + expandedLayout.edges.count
+        #expect(visibleEdgePaths.count == expandedLayout.edges.count * 2)
+
+        let png = try BrainstormExporter.data(
+            root: root,
+            theme: .vsCodeLight,
+            colorScheme: .light,
+            format: .png
         )
+        #expect(!png.isEmpty)
+
+        let markdown = BrainstormTextExporter.string(
+            root: root,
+            format: .markdown
+        )
+        #expect(markdown.contains("Hidden"))
+        let mermaid = BrainstormTextExporter.string(
+            root: root,
+            format: .mermaid
+        )
+        #expect(mermaid.contains("Hidden"))
     }
 
     @Test func htmlExportPreservesNodeShapesAndStyleOverrides() throws {
@@ -2311,8 +2352,24 @@ struct LayoutEngineTests {
         #expect(result.edges.count == 1)
     }
 
-    @Test func foldDoesNotMoveSiblingFrames() {
-        // Hide/show must not reflow other branches — positions stay put in the window.
+    @Test func layoutCarriesNotePresenceWithoutIncludingTheNoteCard() throws {
+        let root = BrainstormNode(
+            title: "Root",
+            note: NodeNote(bodyMarkdown: "Private context")
+        )
+
+        let result = LayoutEngine().layout(
+            root: root,
+            noteInclusion: .none
+        )
+        let layoutRoot = try #require(result.nodes.first)
+
+        #expect(layoutRoot.hasNote)
+        #expect(layoutRoot.note == nil)
+        #expect(layoutRoot.noteFrame == nil)
+    }
+
+    @Test func foldCompactsVisibleSiblingFramesAndCanvasBounds() throws {
         var root = BrainstormNode.root(title: "Root")
         var branch = BrainstormNode(title: "Branch", isExpanded: true)
         branch.children = [
@@ -2324,20 +2381,79 @@ struct LayoutEngineTests {
         root.children = [branch, sibling]
 
         let expanded = LayoutEngine().layout(root: root)
-        let siblingExpanded = expanded.nodes.first { $0.title == "Sibling" }!
-        let branchExpanded = expanded.nodes.first { $0.title == "Branch" }!
-        let rootExpanded = expanded.nodes.first { $0.title == "Root" }!
+        let siblingExpanded = try #require(
+            expanded.nodes.first { $0.title == "Sibling" }
+        )
+        let branchExpanded = try #require(
+            expanded.nodes.first { $0.title == "Branch" }
+        )
 
         root.children[0].isExpanded = false
         let folded = LayoutEngine().layout(root: root)
-        let siblingFolded = folded.nodes.first { $0.title == "Sibling" }!
-        let branchFolded = folded.nodes.first { $0.title == "Branch" }!
-        let rootFolded = folded.nodes.first { $0.title == "Root" }!
+        let siblingFolded = try #require(
+            folded.nodes.first { $0.title == "Sibling" }
+        )
+        let branchFolded = try #require(
+            folded.nodes.first { $0.title == "Branch" }
+        )
 
         #expect(folded.nodes.map(\.title) == ["Root", "Branch", "Sibling"])
-        #expect(siblingFolded.frame == siblingExpanded.frame)
-        #expect(branchFolded.frame == branchExpanded.frame)
-        #expect(rootFolded.frame == rootExpanded.frame)
+        #expect(branchFolded.hasChildren)
+        #expect(branchFolded.childCount == 3)
+        #expect(!branchFolded.isExpanded)
+        #expect(
+            siblingFolded.frame.midY - branchFolded.frame.midY
+                < siblingExpanded.frame.midY - branchExpanded.frame.midY
+        )
+        #expect(folded.contentSize.height < expanded.contentSize.height)
+    }
+
+    @Test func foldAutoPacksExpandedLayoutOffsetAndKeepsItForPresentation() throws {
+        var root = BrainstormNode.root(title: "Root")
+        var branch = BrainstormNode(
+            title: "Positioned branch",
+            isExpanded: false
+        )
+        branch.children = [BrainstormNode(title: "Hidden child")]
+        branch.offsetY = 1_200
+        root.children = [
+            branch,
+            BrainstormNode(title: "Visible sibling"),
+        ]
+
+        let visible = LayoutEngine().layout(root: root)
+        let visibleBranch = try #require(
+            visible.nodes.first { $0.title == "Positioned branch" }
+        )
+        let visibleSibling = try #require(
+            visible.nodes.first { $0.title == "Visible sibling" }
+        )
+        let visibleGap = abs(
+            visibleBranch.frame.midY - visibleSibling.frame.midY
+        )
+
+        let complete = LayoutEngine().layout(
+            root: root,
+            placementPolicy: .allDescendants
+        )
+        let completeBranch = try #require(
+            complete.nodes.first { $0.title == "Positioned branch" }
+        )
+        let completeSibling = try #require(
+            complete.nodes.first { $0.title == "Visible sibling" }
+        )
+        let completeGap = abs(
+            completeBranch.frame.midY - completeSibling.frame.midY
+        )
+
+        #expect(visible.nodes.map(\.title) == [
+            "Root",
+            "Positioned branch",
+            "Visible sibling",
+        ])
+        #expect(visibleGap < 200)
+        #expect(completeGap > visibleGap + 800)
+        #expect(complete.nodes.contains { $0.title == "Hidden child" })
     }
 
     @Test func rootTitleFrameFitsFullTextWithoutTruncation() {

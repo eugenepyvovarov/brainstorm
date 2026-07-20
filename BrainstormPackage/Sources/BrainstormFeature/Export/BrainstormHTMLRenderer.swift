@@ -30,17 +30,13 @@ enum BrainstormHTMLRenderer {
             ? "Brainstorm mind map"
             : "Mind map: \(normalizedTitle)"
 
+        // Map and presentation share the exporter's fully expanded layout.
+        // Collapsed state stays in the `.bs` document only and is not reflected
+        // in any export surface.
         let branches = layout.edges
             .map { branchMarkup($0, theme: theme, palette: palette) }
             .joined(separator: "\n")
-        // Presentation uses the same geometry as a fully expanded canvas, even
-        // when the saved map has folded branches. This lets the web camera
-        // retrace the real hierarchy while DFS moves between branch leaves.
-        let presentationLayout = LayoutEngine().layout(
-            root: root,
-            noteInclusion: .none,
-            placementPolicy: .allDescendants
-        )
+        let presentationLayout = layout
         let presentationSequence = PresentationSequence(
             root: root,
             layout: presentationLayout
@@ -48,9 +44,7 @@ enum BrainstormHTMLRenderer {
         let presentationNodes = presentationSequence.items
         let presentationWidth = number(presentationLayout.contentSize.width)
         let presentationHeight = number(presentationLayout.contentSize.height)
-        let presentationBranches = presentationLayout.edges
-            .map { branchMarkup($0, theme: theme, palette: palette) }
-            .joined(separator: "\n")
+        let presentationBranches = branches
         let includedNotes: [UUID: NodeNote] = Dictionary(
             uniqueKeysWithValues: presentationNodes.compactMap { item -> (UUID, NodeNote)? in
                 guard let note = item.node.note,
@@ -230,6 +224,8 @@ enum BrainstormHTMLRenderer {
               z-index: 2;
               overflow: visible;
               padding: 0;
+              -webkit-transform-style: preserve-3d;
+              transform-style: preserve-3d;
             }
             .node.map-node-flippable[data-face="note"] {
               z-index: 12;
@@ -239,6 +235,7 @@ enum BrainstormHTMLRenderer {
               width: 100%;
               height: 100%;
               transform-origin: center;
+              -webkit-transform-style: preserve-3d;
               transform-style: preserve-3d;
               transition: transform 560ms cubic-bezier(0.2, 0.76, 0.18, 1);
             }
@@ -248,8 +245,10 @@ enum BrainstormHTMLRenderer {
             .map-node-front,
             .map-node-note-back {
               position: absolute;
-              backface-visibility: hidden;
               -webkit-backface-visibility: hidden;
+              backface-visibility: hidden;
+              -webkit-transform-style: preserve-3d;
+              transform-style: preserve-3d;
             }
             .map-node-front {
               inset: 0;
@@ -258,6 +257,24 @@ enum BrainstormHTMLRenderer {
               align-items: center;
               gap: var(--node-gap, 0px);
               padding: var(--node-padding-y, 10px) 16px;
+              /* Explicit front face so Safari honors backface-visibility
+                 while the card rotates; otherwise the mirrored title shows
+                 through the note side. */
+              transform: rotateY(0deg) translateZ(1px);
+              transition: opacity 0s linear 280ms;
+            }
+            .node[data-face="note"] .map-node-front {
+              opacity: 0;
+              pointer-events: none;
+            }
+            .node[data-face="node"] .map-node-note-back {
+              opacity: 0;
+              pointer-events: none;
+              transition: opacity 0s linear 280ms;
+            }
+            .node[data-face="note"] .map-node-note-back {
+              opacity: 1;
+              transition: opacity 0s linear 280ms;
             }
             .map-node-front .node-title,
             .map-node-front .node-media {
@@ -294,6 +311,7 @@ enum BrainstormHTMLRenderer {
               transform:
                 translate(-50%, -50%)
                 rotateY(180deg)
+                translateZ(1px)
                 scale(var(--map-note-counter-scale, 1));
               transform-origin: center;
               user-select: text;
@@ -591,11 +609,13 @@ enum BrainstormHTMLRenderer {
               fill: var(--accent-contrast);
             }
             #presentation-progress {
-              min-width: 4.5em;
+              flex: 0 0 auto;
+              min-width: 5.5em;
               padding: 0 8px;
               color: var(--note-secondary);
               font-variant-numeric: tabular-nums;
               text-align: center;
+              white-space: nowrap;
             }
             .presentation-edge-navigation {
               position: fixed;
@@ -680,9 +700,13 @@ enum BrainstormHTMLRenderer {
               inset: 0;
               overflow: hidden;
               overflow: clip;
-              touch-action: pan-y;
+              cursor: grab;
+              touch-action: none;
               user-select: none;
               -webkit-user-select: none;
+            }
+            #presentation-stage.dragging {
+              cursor: grabbing;
             }
             #presentation-world {
               position: absolute;
@@ -692,6 +716,22 @@ enum BrainstormHTMLRenderer {
               height: \(presentationHeight)px;
               transform-origin: 0 0;
               will-change: auto;
+            }
+            #presentation-focus-layer {
+              position: absolute;
+              z-index: 6;
+              inset: 0;
+              overflow: visible;
+              pointer-events: none;
+            }
+            #presentation-focus-layer > .presentation-slide {
+              z-index: 1;
+              opacity: 1;
+              pointer-events: auto;
+              transform-origin: center;
+              transition: none;
+              -webkit-transform-style: preserve-3d;
+              transform-style: preserve-3d;
             }
             #presentation-world-branches {
               position: absolute;
@@ -715,7 +755,8 @@ enum BrainstormHTMLRenderer {
               z-index: 1;
               overflow: visible;
               opacity: 0.46;
-              pointer-events: none;
+              cursor: pointer;
+              pointer-events: auto;
               transform-origin: 0 0;
               -webkit-font-smoothing: antialiased;
               text-rendering: geometricPrecision;
@@ -726,7 +767,6 @@ enum BrainstormHTMLRenderer {
             .presentation-slide[data-position="current"] {
               z-index: 4;
               opacity: 1;
-              pointer-events: auto;
             }
             .presentation-slide[data-position="current"]
               .presentation-node-shape {
@@ -736,21 +776,13 @@ enum BrainstormHTMLRenderer {
               .presentation-node-front {
               cursor: pointer;
             }
-            .presentation-slide[data-position="previous"] {
-              z-index: 3;
-              opacity: 0.68;
-              cursor: pointer;
-              pointer-events: auto;
-            }
+            .presentation-slide[data-position="previous"],
             .presentation-slide[data-position="next"] {
               z-index: 3;
               opacity: 0.68;
-              cursor: pointer;
-              pointer-events: auto;
             }
             .presentation-slide[data-position="context"] {
-              cursor: pointer;
-              pointer-events: auto;
+              z-index: 2;
             }
             .presentation-slide:focus-visible {
               outline: none;
@@ -759,11 +791,16 @@ enum BrainstormHTMLRenderer {
               opacity: 1;
               stroke-width: 3.25;
             }
+            .presentation-slide:has(.presentation-flip) {
+              -webkit-transform-style: preserve-3d;
+              transform-style: preserve-3d;
+            }
             .presentation-flip {
               position: relative;
               width: 100%;
               height: 100%;
               transform-origin: center;
+              -webkit-transform-style: preserve-3d;
               transform-style: preserve-3d;
               transition: transform 640ms cubic-bezier(0.2, 0.76, 0.18, 1);
               will-change: auto;
@@ -774,8 +811,10 @@ enum BrainstormHTMLRenderer {
             .presentation-node-front,
             .presentation-note-back {
               position: absolute;
-              backface-visibility: hidden;
               -webkit-backface-visibility: hidden;
+              backface-visibility: hidden;
+              -webkit-transform-style: preserve-3d;
+              transform-style: preserve-3d;
             }
             .presentation-node-front {
               inset: 0;
@@ -792,6 +831,24 @@ enum BrainstormHTMLRenderer {
               font-style: var(--slide-font-style);
               font-weight: var(--slide-font-weight);
               line-height: var(--rendered-slide-line-height, var(--slide-line-height));
+              /* Explicit front face so Safari honors backface-visibility
+                 while the card rotates; otherwise the mirrored title shows
+                 through the note side. */
+              transform: rotateY(0deg) translateZ(1px);
+              transition: opacity 0s linear 320ms;
+            }
+            .presentation-slide[data-face="note"] .presentation-node-front {
+              opacity: 0;
+              pointer-events: none;
+            }
+            .presentation-slide[data-face="node"] .presentation-note-back {
+              opacity: 0;
+              pointer-events: none;
+              transition: opacity 0s linear 320ms;
+            }
+            .presentation-slide[data-face="note"] .presentation-note-back {
+              opacity: 1;
+              transition: opacity 0s linear 320ms;
             }
             .presentation-node-shape {
               position: absolute;
@@ -919,6 +976,7 @@ enum BrainstormHTMLRenderer {
               transform:
                 translate(-50%, -50%)
                 rotateY(180deg)
+                translateZ(1px)
                 scale(var(--note-counter-scale, 1));
             }
             .presentation-note-header {
@@ -1061,9 +1119,10 @@ enum BrainstormHTMLRenderer {
                 padding-left: 8px;
               }
               #presentation-progress {
-                min-width: 3.6em;
-                padding-right: 3px;
-                padding-left: 3px;
+                min-width: 5.25em;
+                padding-right: 6px;
+                padding-left: 6px;
+                white-space: nowrap;
               }
               #brainstorm-attribution {
                 right: max(8px, env(safe-area-inset-right));
@@ -1270,6 +1329,7 @@ enum BrainstormHTMLRenderer {
                 </svg>
         \(indent(presentationSlides, spaces: 8))
               </div>
+              <div id="presentation-focus-layer"></div>
             </section>
             <button
               class="presentation-edge-navigation"
@@ -1321,6 +1381,8 @@ enum BrainstormHTMLRenderer {
                 document.getElementById("presentation-stage");
               const presentationWorld =
                 document.getElementById("presentation-world");
+              const presentationFocusLayer =
+                document.getElementById("presentation-focus-layer");
               const mapWidth = Number(viewport.dataset.mapWidth);
               const mapHeight = Number(viewport.dataset.mapHeight);
               let currentMode = "\(options.htmlInitialMode.rawValue)";
@@ -1396,8 +1458,13 @@ enum BrainstormHTMLRenderer {
               let presentationCameraPoint = null;
               let presentationCameraScale = 1;
               let presentationRenderViewportKey = "";
-              let presentationSwipe = null;
+              let focusedScreenSlide = null;
+              let focusedWorldPlaceholder = null;
+              let presentationPointers = new Map();
+              let presentationPanSession = null;
               let suppressPresentationSlideClickUntil = 0;
+              const presentationMinimumScale = 0.12;
+              const presentationMaximumScale = 6;
 
               const slideMapPoint = slide => {
                 const x = Number(slide?.dataset.mapX);
@@ -1426,49 +1493,11 @@ enum BrainstormHTMLRenderer {
                 };
               };
 
-              const parseSpatialRoute = value => {
-                if (!value) return [];
-                return value
-                  .split(";")
-                  .map(pair => {
-                    const [x, y] = pair.split(",").map(Number);
-                    return Number.isFinite(x) && Number.isFinite(y)
-                      ? { x, y }
-                      : null;
-                  })
-                  .filter(Boolean);
-              };
-
-              const smoothBranchRoute = (points, pivotIndex) => {
-                if (
-                  !Array.isArray(points)
-                  || points.length < 3
-                  || !Number.isInteger(pivotIndex)
-                  || pivotIndex <= 0
-                  || pivotIndex >= points.length - 1
-                ) {
-                  return points;
-                }
-                const source = points[0];
-                const pivot = points[pivotIndex];
-                const destination = points.at(-1);
-                // Preserve the map-aware return toward the common ancestor,
-                // but use one continuous quadratic path instead of visibly
-                // landing on each intermediate parent and reversing.
-                return [0, 0.2, 0.4, 0.6, 0.8, 1].map(progress => {
-                  const inverse = 1 - progress;
-                  return {
-                    x:
-                      inverse * inverse * source.x
-                      + 2 * inverse * progress * pivot.x
-                      + progress * progress * destination.x,
-                    y:
-                      inverse * inverse * source.y
-                      + 2 * inverse * progress * pivot.y
-                      + progress * progress * destination.y,
-                  };
-                });
-              };
+              const isCompactPresentationViewport = () =>
+                matchMedia(
+                  "(max-width: 640px), (max-aspect-ratio: 4 / 5), "
+                  + "(max-height: 520px) and (orientation: landscape)"
+                ).matches;
 
               const presentationSafeRect = () => {
                 const width = Math.max(0, window.innerWidth);
@@ -1477,10 +1506,7 @@ enum BrainstormHTMLRenderer {
                   28,
                   Math.max(16, Math.min(width, height) * 0.03)
                 );
-                const controlsAtBottom = matchMedia(
-                  "(max-width: 640px), (max-aspect-ratio: 4 / 5), "
-                  + "(max-height: 520px) and (orientation: landscape)"
-                ).matches;
+                const controlsAtBottom = isCompactPresentationViewport();
                 const top = controlsAtBottom ? peek : Math.max(peek, 64);
                 const bottom = controlsAtBottom ? Math.max(peek, 64) : peek;
                 return {
@@ -1634,6 +1660,124 @@ enum BrainstormHTMLRenderer {
                 return Math.min(base, bestCap ?? floor);
               };
 
+              const alignToDevicePixel = value => {
+                const pixelRatio = Math.max(
+                  1,
+                  Number(window.devicePixelRatio) || 1
+                );
+                return Math.round(value * pixelRatio) / pixelRatio;
+              };
+
+              const applyWorldSlideGeometry = (slide, renderScale) => {
+                if (!slide) return;
+                const width = Math.max(
+                  1,
+                  Number(slide.dataset.mapWidth) || 1
+                );
+                const height = Math.max(
+                  1,
+                  Number(slide.dataset.mapHeight) || 1
+                );
+                const centerX = Number(slide.dataset.mapX) || 0;
+                const centerY = Number(slide.dataset.mapY) || 0;
+                slide.style.left = `${centerX}px`;
+                slide.style.top = `${centerY}px`;
+                slide.style.width = `${width * renderScale}px`;
+                slide.style.height = `${height * renderScale}px`;
+                slide.style.transform =
+                  `scale(${1 / renderScale}) translate(-50%, -50%)`;
+              };
+
+              const applyFocusedSlideGeometry = (
+                slide,
+                renderScale,
+                settledRect = null
+              ) => {
+                if (!slide) return;
+                const layerRect =
+                  presentationFocusLayer.getBoundingClientRect();
+                const width = settledRect?.width ?? Math.max(
+                  1,
+                  (Number(slide.dataset.mapWidth) || 1) * renderScale
+                );
+                const height = settledRect?.height ?? Math.max(
+                  1,
+                  (Number(slide.dataset.mapHeight) || 1) * renderScale
+                );
+                const alignedWidth = alignToDevicePixel(width);
+                const alignedHeight = alignToDevicePixel(height);
+                const left = settledRect
+                  ? settledRect.left - layerRect.left
+                  : (layerRect.width - alignedWidth) / 2;
+                const top = settledRect
+                  ? settledRect.top - layerRect.top
+                  : (layerRect.height - alignedHeight) / 2;
+                const alignedLeft = alignToDevicePixel(left);
+                const alignedTop = alignToDevicePixel(top);
+                slide.style.left =
+                  `${alignedLeft + alignedWidth / 2}px`;
+                slide.style.top =
+                  `${alignedTop + alignedHeight / 2}px`;
+                slide.style.width = `${alignedWidth}px`;
+                slide.style.height = `${alignedHeight}px`;
+                slide.style.transform = "translate(-50%, -50%)";
+              };
+
+              const restoreFocusedSlideToWorld = ({
+                resetMedia = true,
+              } = {}) => {
+                const slide = focusedScreenSlide;
+                if (!slide) return;
+                if (resetMedia) {
+                  slide
+                    .querySelectorAll("[data-youtube-host]")
+                    .forEach(resetYouTube);
+                }
+                slide.classList.remove("is-screen-focused");
+                if (focusedWorldPlaceholder?.parentNode) {
+                  focusedWorldPlaceholder.replaceWith(slide);
+                } else {
+                  presentationWorld.append(slide);
+                }
+                applyWorldSlideGeometry(
+                  slide,
+                  presentationScaleFor(slide)
+                );
+                focusedScreenSlide = null;
+                focusedWorldPlaceholder = null;
+              };
+
+              const promoteCurrentSlideToFocus = worldScale => {
+                if (
+                  currentMode !== "presentation"
+                  || presentation.hidden
+                  || !presentationFocusLayer
+                ) {
+                  return;
+                }
+                const slide = currentSlide();
+                if (!slide) return;
+                if (focusedScreenSlide === slide) {
+                  applyFocusedSlideGeometry(slide, worldScale);
+                  return;
+                }
+                restoreFocusedSlideToWorld();
+                const settledRect = slide.getBoundingClientRect();
+                const placeholder = document.createComment(
+                  `presentation-slide:${slide.dataset.nodeId || ""}`
+                );
+                slide.replaceWith(placeholder);
+                presentationFocusLayer.append(slide);
+                slide.classList.add("is-screen-focused");
+                focusedScreenSlide = slide;
+                focusedWorldPlaceholder = placeholder;
+                applyFocusedSlideGeometry(
+                  slide,
+                  worldScale,
+                  settledRect
+                );
+              };
+
               const syncPresentationRenderScale = () => {
                 const viewportKey =
                   `${window.innerWidth}x${window.innerHeight}`;
@@ -1645,16 +1789,10 @@ enum BrainstormHTMLRenderer {
                   // then animate the one shared world without resizing node
                   // bodies and text on a separate timeline.
                   const renderScale = presentationScaleFor(slide);
-                  const width = Math.max(
-                    1,
-                    Number(slide.dataset.mapWidth) || 1
-                  );
                   const height = Math.max(
                     1,
                     Number(slide.dataset.mapHeight) || 1
                   );
-                  const centerX = Number(slide.dataset.mapX) || 0;
-                  const centerY = Number(slide.dataset.mapY) || 0;
                   const baseFontSize =
                     Number(slide.dataset.baseFontSize) || 14;
                   const baseLineHeight =
@@ -1675,12 +1813,6 @@ enum BrainstormHTMLRenderer {
                     Math.max(6, noteMarkerSize * 0.32)
                   );
 
-                  slide.style.left = `${centerX}px`;
-                  slide.style.top = `${centerY}px`;
-                  slide.style.width = `${width * renderScale}px`;
-                  slide.style.height = `${height * renderScale}px`;
-                  slide.style.transform =
-                    `scale(${1 / renderScale}) translate(-50%, -50%)`;
                   slide.style.setProperty(
                     "--presentation-render-scale",
                     String(renderScale)
@@ -1725,6 +1857,11 @@ enum BrainstormHTMLRenderer {
                     "--presentation-note-marker-inset",
                     `${noteMarkerInset}px`
                   );
+                  if (slide === focusedScreenSlide) {
+                    applyFocusedSlideGeometry(slide, renderScale);
+                  } else {
+                    applyWorldSlideGeometry(slide, renderScale);
+                  }
                 });
               };
 
@@ -1746,16 +1883,16 @@ enum BrainstormHTMLRenderer {
                 worldScale,
                 alignToDevicePixels = true
               ) => {
-                const pixelRatio = Math.max(
-                  1,
-                  Number(window.devicePixelRatio) || 1
-                );
-                const align = value =>
-                  Math.round(value * pixelRatio) / pixelRatio;
                 const rawX = -point.x * worldScale;
                 const rawY = -point.y * worldScale;
-                const x = alignToDevicePixels ? align(rawX) : rawX;
-                const y = alignToDevicePixels ? align(rawY) : rawY;
+                const centerX = window.innerWidth / 2;
+                const centerY = window.innerHeight / 2;
+                const x = alignToDevicePixels
+                  ? alignToDevicePixel(centerX + rawX) - centerX
+                  : rawX;
+                const y = alignToDevicePixels
+                  ? alignToDevicePixel(centerY + rawY) - centerY
+                  : rawY;
                 return `translate(${x}px, ${y}px) scale(${worldScale})`;
               };
 
@@ -1795,6 +1932,19 @@ enum BrainstormHTMLRenderer {
                 presentationWorld.style.transform = "none";
                 void presentationWorld.offsetWidth;
                 setCameraFrame(point, worldScale);
+                promoteCurrentSlideToFocus(worldScale);
+                syncPresentationYouTubePlayers();
+                window.dispatchEvent(
+                  new CustomEvent(
+                    "brainstorm:presentation-camera-settled",
+                    {
+                      detail: {
+                        nodeID: currentSlide()?.dataset.nodeId || null,
+                        scale: worldScale,
+                      },
+                    }
+                  )
+                );
               };
 
               const presentationRouteDistance = points => {
@@ -1827,97 +1977,55 @@ enum BrainstormHTMLRenderer {
                 );
               };
 
-              const presentationOverviewScale = (
-                points,
-                sourceScale,
-                destinationScale
-              ) => {
-                if (points.length < 2) {
-                  return Math.min(sourceScale, destinationScale);
-                }
-                const safe = presentationSafeRect();
-                const xs = points.map(point => point.x);
-                const ys = points.map(point => point.y);
-                const spanX = Math.max(...xs) - Math.min(...xs);
-                const spanY = Math.max(...ys) - Math.min(...ys);
-                const availableWidth =
-                  Math.max(1, safe.maxX - safe.minX) * 0.72;
-                const availableHeight =
-                  Math.max(1, safe.maxY - safe.minY) * 0.72;
-                return Math.max(
-                  Number.EPSILON,
-                  Math.min(
-                    sourceScale,
-                    destinationScale,
-                    spanX > 1
-                      ? availableWidth / spanX
-                      : Number.POSITIVE_INFINITY,
-                    spanY > 1
-                      ? availableHeight / spanY
-                      : Number.POSITIVE_INFINITY
-                  )
-                );
-              };
-
               const presentationCameraFrames = (
                 points,
                 sourceScale,
                 destinationScale
               ) => {
-                if (points.length < 2 || reducedMotion.matches) {
+                // Always interpolate a straight chord between the current and
+                // next node centers. Hierarchy routes that retrace branch
+                // connectors made Mobile Safari appear to "walk" the edges.
+                const start = points[0];
+                const end = points.at(-1);
+                if (!start || !end || reducedMotion.matches) {
                   return [
                     {
-                      point: points[0],
+                      point: start ?? end,
                       scale: sourceScale,
                       offset: 0,
                     },
                     {
-                      point: points.at(-1),
+                      point: end ?? start,
                       scale: destinationScale,
                       offset: 1,
                     },
                   ];
                 }
-                const overviewScale = presentationOverviewScale(
-                  points,
-                  sourceScale,
-                  destinationScale
-                );
-                const anchors = points.length === 2
-                  ? [
-                      points[0],
-                      {
-                        x: (points[0].x + points[1].x) / 2,
-                        y: (points[0].y + points[1].y) / 2,
-                      },
-                      points[1],
-                    ]
-                  : points;
-                const segmentLengths = anchors.slice(1).map(
-                  (point, index) => Math.hypot(
-                    point.x - anchors[index].x,
-                    point.y - anchors[index].y
-                  )
-                );
-                const totalDistance = Math.max(
-                  1,
-                  segmentLengths.reduce((total, length) => total + length, 0)
-                );
-                let traveled = 0;
-                return anchors.map((point, index) => {
-                  if (index > 0) traveled += segmentLengths[index - 1];
-                  return {
-                    point,
-                    scale: index === 0
-                      ? sourceScale
-                      : index === anchors.length - 1
-                        ? destinationScale
-                        : overviewScale,
-                    offset: index === anchors.length - 1
-                      ? 1
-                      : traveled / totalDistance,
-                  };
-                });
+                // Mild mid-travel zoom blend only — never an overview that
+                // reframes ancestors along the connector path.
+                const midScale =
+                  Math.min(sourceScale, destinationScale)
+                  * (isCompactPresentationViewport() ? 0.94 : 0.88);
+                return [
+                  {
+                    point: start,
+                    scale: sourceScale,
+                    offset: 0,
+                  },
+                  {
+                    point: {
+                      x: (start.x + end.x) / 2,
+                      y: (start.y + end.y) / 2,
+                    },
+                    scale: midScale,
+                    offset: 0.5,
+                  },
+                  {
+                    point: end,
+                    scale: destinationScale,
+                    offset: 1,
+                  },
+                ];
               };
 
               const cameraFrameAt = (frames, progress) => {
@@ -1955,6 +2063,94 @@ enum BrainstormHTMLRenderer {
                 presentationWorld.style.willChange = "auto";
               };
 
+              const clampPresentationScale = value =>
+                Math.min(
+                  presentationMaximumScale,
+                  Math.max(presentationMinimumScale, value)
+                );
+
+              // Drop the screen-space focus card so pan/zoom moves every node
+              // together in the shared world transform.
+              const enterPresentationFreeLook = () => {
+                cancelCameraAnimation();
+                if (focusedScreenSlide) {
+                  restoreFocusedSlideToWorld({ resetMedia: false });
+                }
+              };
+
+              const panPresentationByScreenDelta = (dx, dy) => {
+                if (!presentationCameraPoint) return;
+                const scale = Math.max(presentationCameraScale, 0.01);
+                setCameraFrame(
+                  {
+                    x: presentationCameraPoint.x - dx / scale,
+                    y: presentationCameraPoint.y - dy / scale,
+                  },
+                  presentationCameraScale,
+                  false
+                );
+              };
+
+              const zoomPresentationAtClient = (
+                clientX,
+                clientY,
+                nextScale
+              ) => {
+                if (!presentationCameraPoint) return;
+                enterPresentationFreeLook();
+                const scale = Math.max(presentationCameraScale, 0.01);
+                const centerX = window.innerWidth / 2;
+                const centerY = window.innerHeight / 2;
+                const mapX =
+                  presentationCameraPoint.x + (clientX - centerX) / scale;
+                const mapY =
+                  presentationCameraPoint.y + (clientY - centerY) / scale;
+                const clamped = clampPresentationScale(nextScale);
+                setCameraFrame(
+                  {
+                    x: mapX - (clientX - centerX) / clamped,
+                    y: mapY - (clientY - centerY) / clamped,
+                  },
+                  clamped,
+                  false
+                );
+              };
+
+              const zoomPresentationAtCenter = factor => {
+                zoomPresentationAtClient(
+                  window.innerWidth / 2,
+                  window.innerHeight / 2,
+                  presentationCameraScale * factor
+                );
+              };
+
+              const refocusPresentationOnCurrent = () => {
+                const slide = currentSlide();
+                const point = slideMapPoint(slide);
+                if (!slide || !point) return;
+                cancelCameraAnimation();
+                const scale = presentationScaleFor(slide);
+                syncPresentationRenderScale();
+                syncPresentationNoteScale(slide, scale);
+                settleCameraFrame(point, scale);
+              };
+
+              const presentationTwoPointerGesture = () => {
+                const points = Array.from(
+                  presentationPointers.values()
+                ).slice(0, 2);
+                if (points.length < 2) return null;
+                const [first, second] = points;
+                return {
+                  x: (first.x + second.x) / 2,
+                  y: (first.y + second.y) / 2,
+                  distance: Math.hypot(
+                    second.x - first.x,
+                    second.y - first.y
+                  ),
+                };
+              };
+
               const travelCamera = route => {
                 const destination = slideMapPoint(currentSlide());
                 if (!destination) return;
@@ -1969,6 +2165,9 @@ enum BrainstormHTMLRenderer {
                   presentationCameraPoint ?? route[0] ?? destination;
                 const sourceScale = presentationCameraScale;
                 cancelCameraAnimation();
+                presentationPointers.clear();
+                presentationPanSession = null;
+                presentationStage.classList.remove("dragging");
                 presentationWorld.style.willChange = "auto";
                 const points = route.length > 0 ? [...route] : [source, destination];
                 if (
@@ -2187,6 +2386,12 @@ enum BrainstormHTMLRenderer {
                   Math.max(0, currentSlideIndex),
                   Math.max(0, slides.length - 1)
                 );
+                if (
+                  focusedScreenSlide
+                  && focusedScreenSlide !== currentSlide()
+                ) {
+                  restoreFocusedSlideToWorld();
+                }
                 const durationRoute = cameraRoute.length > 0
                   ? cameraRoute
                   : [
@@ -2262,7 +2467,6 @@ enum BrainstormHTMLRenderer {
                   }
                 });
                 travelCamera(cameraRoute);
-                syncPresentationYouTubePlayers();
                 progress.textContent =
                   presentationStepCount === 0
                     ? "0 of 0"
@@ -2301,6 +2505,23 @@ enum BrainstormHTMLRenderer {
                 slides.forEach(slide => setSlideFace(slide, "node"));
               };
 
+              const presentationCameraRoute = (source, target) => {
+                // Sequential presentation always pans in a straight line
+                // between node centers. Do not retrace hierarchy routes that
+                // climb parents / shared ancestors along the branch edges.
+                const from = slideMapPoint(source);
+                const to = slideMapPoint(target);
+                if (!from || !to) return [];
+                return [from, to];
+              };
+
+              const suppressSlideClicksDuringTravel = route => {
+                suppressPresentationSlideClickUntil =
+                  performance.now()
+                  + presentationTravelDuration(route)
+                  + 160;
+              };
+
               const navigatePresentation = delta => {
                 const source = currentSlide();
                 if (!source || delta === 0) return;
@@ -2321,17 +2542,9 @@ enum BrainstormHTMLRenderer {
                   Math.max(0, slides.length - 1)
                 );
                 if (next === currentSlideIndex) return;
-                const route = parseSpatialRoute(
-                  delta < 0
-                    ? source?.dataset.previousRoute
-                    : source?.dataset.nextRoute
-                );
-                const routePivot = Number(
-                  delta < 0
-                    ? source?.dataset.previousRoutePivot
-                    : source?.dataset.nextRoutePivot
-                );
-                const cameraRoute = smoothBranchRoute(route, routePivot);
+                const target = slides[next];
+                const cameraRoute = presentationCameraRoute(source, target);
+                suppressSlideClicksDuringTravel(cameraRoute);
                 resetPresentationFaces();
                 currentSlideIndex = next;
                 if (
@@ -2356,21 +2569,15 @@ enum BrainstormHTMLRenderer {
                   return;
                 }
                 const source = currentSlide();
-                let route = [];
-                if (index === currentSlideIndex - 1) {
-                  route = parseSpatialRoute(source?.dataset.previousRoute);
-                } else if (index === currentSlideIndex + 1) {
-                  route = parseSpatialRoute(source?.dataset.nextRoute);
-                } else {
-                  route = [
-                    slideMapPoint(source),
-                    slideMapPoint(slides[index]),
-                  ].filter(Boolean);
-                }
                 const direction = index < currentSlideIndex ? -1 : 1;
+                const cameraRoute = presentationCameraRoute(
+                  source,
+                  slides[index]
+                );
+                suppressSlideClicksDuringTravel(cameraRoute);
                 resetPresentationFaces();
                 currentSlideIndex = index;
-                updatePresentation(direction, true, route);
+                updatePresentation(direction, true, cameraRoute);
                 requestAnimationFrame(() => {
                   currentSlide()?.focus({ preventScroll: true });
                 });
@@ -2395,6 +2602,7 @@ enum BrainstormHTMLRenderer {
                       ".presentation-slide [data-youtube-host]"
                     )
                     .forEach(resetYouTube);
+                  restoreFocusedSlideToWorld({ resetMedia: false });
                   updatePresentationConnections();
                   if (updateHash) history.replaceState(null, "", "#map");
                   requestAnimationFrame(fit);
@@ -2759,22 +2967,40 @@ enum BrainstormHTMLRenderer {
                     return;
                   }
                   const previewTarget = event.target.closest?.(
-                    '.presentation-slide[data-position="previous"],'
-                    + '.presentation-slide[data-position="next"]'
+                    ".presentation-slide"
                   );
                   if (
                     previewTarget
+                    && previewTarget !== currentSlide()
                     && (event.key === "Enter" || event.key === " ")
                   ) {
                     event.preventDefault();
-                    navigatePresentation(
-                      previewTarget.dataset.position === "previous" ? -1 : 1
-                    );
+                    const index =
+                      slideIndexByElement.get(previewTarget) ?? -1;
+                    if (index >= 0) navigatePresentationTo(index);
                     return;
                   }
                   if (event.key.toLowerCase() === "n") {
                     event.preventDefault();
                     toggleCurrentNote();
+                    return;
+                  }
+                  if (event.key === "+" || event.key === "=") {
+                    event.preventDefault();
+                    zoomPresentationAtCenter(1.15);
+                    return;
+                  }
+                  if (event.key === "-") {
+                    event.preventDefault();
+                    zoomPresentationAtCenter(1 / 1.15);
+                    return;
+                  }
+                  if (
+                    event.key === "0"
+                    || event.key.toLowerCase() === "f"
+                  ) {
+                    event.preventDefault();
+                    refocusPresentationOnCurrent();
                     return;
                   }
                   if (interactiveTarget && !previewTarget) return;
@@ -2891,48 +3117,167 @@ enum BrainstormHTMLRenderer {
                 "click",
                 () => navigatePresentation(1)
               );
+              presentation.addEventListener(
+                "wheel",
+                event => {
+                  if (currentMode !== "presentation") return;
+                  if (
+                    event.target.closest?.(
+                      ".presentation-note, .presentation-note-back"
+                    )
+                  ) {
+                    return;
+                  }
+                  event.preventDefault();
+                  const lineMultiplier =
+                    event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
+                  const factor = Math.exp(
+                    -event.deltaY * lineMultiplier * 0.0015
+                  );
+                  zoomPresentationAtClient(
+                    event.clientX,
+                    event.clientY,
+                    presentationCameraScale * factor
+                  );
+                },
+                { passive: false }
+              );
+
               presentationStage.addEventListener("pointerdown", event => {
+                if (currentMode !== "presentation") return;
                 if (
-                  currentMode !== "presentation"
-                  || event.pointerType !== "touch"
-                  || event.target.closest?.(
-                    "button, a, iframe"
+                  event.target.closest?.(
+                    "button, a, iframe, .presentation-note, "
+                    + ".presentation-note-back"
                   )
                 ) {
-                  presentationSwipe = null;
+                  presentationPanSession = null;
                   return;
                 }
-                // A new deliberate touch must remain clickable even if it
-                // begins during the prior swipe's short suppression window.
-                suppressPresentationSlideClickUntil = 0;
-                presentationSwipe = {
-                  pointerId: event.pointerId,
-                  x: event.clientX,
-                  y: event.clientY,
-                };
-              });
-              presentationStage.addEventListener("pointerup", event => {
-                const start = presentationSwipe;
-                presentationSwipe = null;
-                if (!start || start.pointerId !== event.pointerId) return;
-                const dx = event.clientX - start.x;
-                const dy = event.clientY - start.y;
                 if (
-                  Math.abs(dx) < 48
-                  || Math.abs(dx) <= Math.abs(dy) * 1.2
+                  event.pointerType !== "touch"
+                  && (!event.isPrimary || event.button !== 0)
                 ) {
                   return;
                 }
-                // Mobile Safari synthesizes a click after pointerup. Without
-                // this guard the click can land on the source slide after the
-                // swipe has already advanced, immediately navigating back.
-                suppressPresentationSlideClickUntil =
-                  performance.now() + 450;
-                navigatePresentation(dx < 0 ? 1 : -1);
+                // Fresh gestures remain clickable even inside a prior
+                // navigation suppression window.
+                suppressPresentationSlideClickUntil = 0;
+                event.preventDefault();
+                presentationPointers.set(event.pointerId, {
+                  x: event.clientX,
+                  y: event.clientY,
+                });
+                if (presentationPointers.size === 1) {
+                  presentationPanSession = {
+                    pointerId: event.pointerId,
+                    lastX: event.clientX,
+                    lastY: event.clientY,
+                    moved: false,
+                  };
+                  presentationStage.classList.add("dragging");
+                } else {
+                  presentationPanSession = null;
+                  enterPresentationFreeLook();
+                }
+                if (presentationStage.setPointerCapture) {
+                  presentationStage.setPointerCapture(event.pointerId);
+                }
               });
+              presentationStage.addEventListener("pointermove", event => {
+                if (!presentationPointers.has(event.pointerId)) return;
+                event.preventDefault();
+                const previousGesture = presentationTwoPointerGesture();
+                presentationPointers.set(event.pointerId, {
+                  x: event.clientX,
+                  y: event.clientY,
+                });
+                if (presentationPointers.size >= 2) {
+                  const currentGesture = presentationTwoPointerGesture();
+                  if (previousGesture && currentGesture) {
+                    const factor =
+                      previousGesture.distance > 0
+                        ? currentGesture.distance
+                          / previousGesture.distance
+                        : 1;
+                    zoomPresentationAtClient(
+                      currentGesture.x,
+                      currentGesture.y,
+                      presentationCameraScale * factor
+                    );
+                  }
+                  if (presentationPanSession) {
+                    presentationPanSession.moved = true;
+                  }
+                  return;
+                }
+                const session = presentationPanSession;
+                if (
+                  !session
+                  || session.pointerId !== event.pointerId
+                ) {
+                  return;
+                }
+                if (session.originX == null) {
+                  session.originX = session.lastX;
+                  session.originY = session.lastY;
+                }
+                const dx = event.clientX - session.lastX;
+                const dy = event.clientY - session.lastY;
+                if (dx === 0 && dy === 0) return;
+                if (
+                  !session.moved
+                  && Math.hypot(
+                    event.clientX - session.originX,
+                    event.clientY - session.originY
+                  ) > tapMoveThreshold
+                ) {
+                  enterPresentationFreeLook();
+                  session.moved = true;
+                }
+                if (session.moved) {
+                  panPresentationByScreenDelta(dx, dy);
+                }
+                session.lastX = event.clientX;
+                session.lastY = event.clientY;
+              });
+              const endPresentationPointer = (event, cancelled = false) => {
+                if (!presentationPointers.has(event.pointerId)) return;
+                presentationPointers.delete(event.pointerId);
+                if (
+                  presentationPanSession?.pointerId === event.pointerId
+                ) {
+                  if (
+                    !cancelled
+                    && presentationPanSession.moved
+                  ) {
+                    // Dragging must not also activate the node under the
+                    // pointer (especially Mobile Safari's synthetic click).
+                    suppressPresentationSlideClickUntil =
+                      performance.now() + 450;
+                  }
+                  presentationPanSession = null;
+                }
+                if (presentationPointers.size === 0) {
+                  presentationStage.classList.remove("dragging");
+                }
+                if (
+                  presentationStage.hasPointerCapture?.(event.pointerId)
+                ) {
+                  presentationStage.releasePointerCapture(event.pointerId);
+                }
+              };
+              presentationStage.addEventListener(
+                "pointerup",
+                event => endPresentationPointer(event)
+              );
               presentationStage.addEventListener(
                 "pointercancel",
-                () => { presentationSwipe = null; }
+                event => endPresentationPointer(event, true)
+              );
+              presentationStage.addEventListener(
+                "lostpointercapture",
+                event => endPresentationPointer(event, true)
               );
 
               document.addEventListener("click", event => {
@@ -2975,13 +3320,15 @@ enum BrainstormHTMLRenderer {
                 const slide = event.target.closest?.(".presentation-slide");
                 if (!slide || currentMode !== "presentation") return;
                 if (
-                  performance.now() < suppressPresentationSlideClickUntil
+                  activeCameraAnimation
+                  || performance.now() < suppressPresentationSlideClickUntil
                 ) {
                   event.preventDefault();
                   event.stopPropagation();
                   return;
                 }
                 const index = slideIndexByElement.get(slide) ?? -1;
+                if (index < 0) return;
                 if (index === currentSlideIndex) {
                   if (slide.dataset.face === "node") {
                     if (slide.dataset.hasNote === "true") {
@@ -2992,6 +3339,8 @@ enum BrainstormHTMLRenderer {
                   }
                   return;
                 }
+                // Any visible node is a jump target so free-look pan/zoom can
+                // land on a branch and continue the presentation from there.
                 navigatePresentationTo(index);
               });
 
@@ -3442,16 +3791,29 @@ enum BrainstormHTMLRenderer {
     private static func spatialRoutePivotIndex(
         _ route: PresentationTraversalRoute?
     ) -> Int? {
-        guard let route else { return nil }
-        guard case .branchJump(_, let ascendingLevels, _) =
-            route.relationship
-        else {
+        guard let route, route.nodeIDs.count >= 3 else { return nil }
+        let upperBound = route.nodeIDs.count - 2
+        switch route.relationship {
+        case .branchJump(_, let ascendingLevels, _):
+            // Climb back to the shared ancestor, then descend. The pivot is
+            // the common ancestor so the camera arcs once instead of landing
+            // on each intermediate parent.
+            return min(max(1, ascendingLevels), upperBound)
+        case .sibling:
+            // Sibling camera paths are forced to a direct chord in the
+            // viewer; no pivot is published so stale clients cannot arc
+            // through the parent.
+            return nil
+        case .parent(let levels) where levels >= 2:
+            // Multi-level climbs include every intermediate node. Use a
+            // midpoint ancestor as one control point so the camera does not
+            // settle on each parent in turn.
+            return min(max(1, levels / 2), upperBound)
+        case .child(let levels) where levels >= 2:
+            return min(max(1, levels / 2), upperBound)
+        default:
             return nil
         }
-        return min(
-            max(1, ascendingLevels),
-            max(1, route.nodeIDs.count - 2)
-        )
     }
 
     private static func relationshipMetadata(
@@ -3776,7 +4138,7 @@ enum BrainstormHTMLRenderer {
           data-height="\(number(node.frame.height))"
           data-depth="\(node.depth)"
           data-shape="\(node.style.shape.rawValue)"
-          data-expanded="\(node.isExpanded)"
+          data-expanded="true"
           data-child-count="\(node.childCount)"
           \(hasNote ? #"tabindex="0""# : "")
           \(hasNote ? #"aria-expanded="false""# : "")

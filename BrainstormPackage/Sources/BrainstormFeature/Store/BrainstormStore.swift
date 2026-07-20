@@ -2,6 +2,34 @@ import CoreGraphics
 import Foundation
 import Observation
 
+/// Transient canvas viewport state. Keeping this separately observable prevents
+/// continuous zoom updates from invalidating the document store and every view
+/// that reads document state.
+@Observable
+@MainActor
+public final class CanvasViewportState {
+    public static let minimumZoom: CGFloat = 0.25
+    public static let maximumZoom: CGFloat = 3
+
+    public private(set) var zoomScale: CGFloat = 1
+
+    public init() {}
+
+    public static func clampedZoom(_ scale: CGFloat) -> CGFloat {
+        min(maximumZoom, max(minimumZoom, scale))
+    }
+
+    public func setZoom(_ scale: CGFloat) {
+        let next = Self.clampedZoom(scale)
+        guard abs(next - zoomScale) > .ulpOfOne else { return }
+        zoomScale = next
+    }
+
+    public func zoomIn() { setZoom(zoomScale * 1.15) }
+    public func zoomOut() { setZoom(zoomScale / 1.15) }
+    public func zoomReset() { setZoom(1) }
+}
+
 /// Owns the mind map tree, selection, editing state, and undoable mutations.
 @Observable
 @MainActor
@@ -63,6 +91,8 @@ public final class BrainstormStore {
     /// Shared app-wide workspace preferences. These are not part of the `.bs`
     /// document and are restored independently for every document window.
     @ObservationIgnored private let uiPreferences: BrainstormUIPreferences
+    /// Pan/zoom is transient viewport state, not document state.
+    @ObservationIgnored public let viewport = CanvasViewportState()
 
     /// Focus mode dims everything outside the selected branch.
     public var isFocusMode: Bool {
@@ -71,8 +101,8 @@ public final class BrainstormStore {
             uiPreferences.isFocusMode = isFocusMode
         }
     }
-    /// Canvas zoom scale (1 = 100%).
-    public var zoomScale: CGFloat = 1
+    /// Compatibility accessor for callers that only need the current scale.
+    public var zoomScale: CGFloat { viewport.zoomScale }
     /// Search query; empty hides search highlights.
     public var searchQuery: String = ""
     /// Match IDs for the current query (visible nodes only, DFS order).
@@ -404,7 +434,7 @@ public final class BrainstormStore {
         fileURL = nil
         lastError = nil
         isFocusMode = uiPreferences.isFocusMode
-        zoomScale = 1
+        viewport.zoomReset()
         // Prefer the app-wide default (last selected theme); fall back to current.
         themeID = AppTheme.preferredDefaultID
         clearSearch()
@@ -454,7 +484,7 @@ public final class BrainstormStore {
             fileURL = url
             lastError = nil
             isFocusMode = uiPreferences.isFocusMode
-            zoomScale = 1
+            viewport.zoomReset()
             clearSearch()
             structureEpoch &+= 1
             undoManager.removeAllActions()
@@ -2147,12 +2177,12 @@ public final class BrainstormStore {
     // MARK: - Zoom
 
     public func setZoom(_ scale: CGFloat) {
-        zoomScale = min(3, max(0.25, scale))
+        viewport.setZoom(scale)
     }
 
-    public func zoomIn() { setZoom(zoomScale * 1.15) }
-    public func zoomOut() { setZoom(zoomScale / 1.15) }
-    public func zoomReset() { setZoom(1) }
+    public func zoomIn() { viewport.zoomIn() }
+    public func zoomOut() { viewport.zoomOut() }
+    public func zoomReset() { viewport.zoomReset() }
 
     // MARK: - Search
 

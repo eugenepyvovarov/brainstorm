@@ -12,6 +12,9 @@ public struct LayoutNode: Identifiable, Equatable, Sendable {
     public let depth: Int
     public let style: NodeStyle
     public let media: NodeMedia
+    /// Whether the source node owns non-empty note content, regardless of
+    /// whether the current layout includes the note card itself.
+    public let hasNote: Bool
     /// Note payload selected by the current layout policy.
     public let note: NodeNote?
     /// Static note-card frame below the node card. Branch endpoints still use `frame`.
@@ -41,11 +44,11 @@ public struct LayoutResult: Equatable, Sendable {
 /// Controls whether placement emits only the currently unfolded map or the
 /// complete stored hierarchy.
 ///
-/// Measurement always reserves the complete tree so folding a branch does not
-/// reflow its visible siblings. ``allDescendants`` uses those same measurements
-/// and manual offsets while emitting folded descendants and their edges. This
-/// gives presentation mode the exact geometry of the fully expanded map without
-/// mutating the document's saved expansion state.
+/// ``expandedOnly`` measures and places only the unfolded map, so collapsing a
+/// branch compacts the visible canvas. ``allDescendants`` measures and emits the
+/// complete stored hierarchy, including manual offsets. This gives presentation
+/// mode the exact geometry of the fully expanded map without mutating the
+/// document's saved expansion state.
 public enum LayoutPlacementPolicy: Equatable, Sendable {
     case expandedOnly
     case allDescendants
@@ -104,7 +107,8 @@ public struct LayoutEngine: Sendable {
             root,
             isRoot: true,
             liveTitle: liveTitle,
-            noteInclusion: noteInclusion
+            noteInclusion: noteInclusion,
+            placementPolicy: placementPolicy
         )
         var nodes: [LayoutNode] = []
         var edges: [LayoutEdge] = []
@@ -142,6 +146,7 @@ public struct LayoutEngine: Sendable {
                     depth: node.depth,
                     style: node.style,
                     media: node.media,
+                    hasNote: node.hasNote,
                     note: node.note,
                     noteFrame: node.noteFrame?.offsetBy(dx: shiftX, dy: shiftY).integral,
                     hasManualPosition: node.hasManualPosition,
@@ -184,13 +189,14 @@ public struct LayoutEngine: Sendable {
         }
     }
 
-    /// Always measure the full tree (including folded branches).
-    /// Fold only hides nodes when placing — it must not reflow siblings/ancestors.
+    /// Measure only visible descendants for the normal map. Presentation asks
+    /// for `.allDescendants`, which preserves fully expanded map geometry.
     private func measure(
         _ node: BrainstormNode,
         isRoot: Bool,
         liveTitle: LiveTitleOverride?,
-        noteInclusion: BrainstormNoteInclusion
+        noteInclusion: BrainstormNoteInclusion,
+        placementPolicy: LayoutPlacementPolicy
     ) -> SubtreeMetrics {
         let isEditing = liveTitle?.id == node.id
         let title = isEditing ? (liveTitle?.title ?? node.title) : node.title
@@ -213,7 +219,9 @@ public struct LayoutEngine: Sendable {
             )
         }
         let clusterHeight = nodeSize.height + (measuredNoteSize?.height ?? 0)
-        guard !node.children.isEmpty else {
+        guard !node.children.isEmpty,
+              node.isExpanded || placementPolicy == .allDescendants
+        else {
             return SubtreeMetrics(
                 nodeSize: nodeSize,
                 noteSize: measuredNoteSize,
@@ -227,7 +235,8 @@ public struct LayoutEngine: Sendable {
                 $0,
                 isRoot: false,
                 liveTitle: liveTitle,
-                noteInclusion: noteInclusion
+                noteInclusion: noteInclusion,
+                placementPolicy: placementPolicy
             )
         }
         let spacing = CGFloat(max(0, childMetrics.count - 1)) * siblingSpacing
@@ -376,7 +385,19 @@ public struct LayoutEngine: Sendable {
         edges: inout [LayoutEdge]
     ) -> CGRect {
         let ox = CGFloat(node.offsetX ?? 0)
-        let oy = CGFloat(node.offsetY ?? 0)
+        // A branch is commonly positioned while its complete subtree is
+        // visible. Reusing that expanded-layout vertical displacement after
+        // folding would leave the exact empty space the fold is meant to
+        // remove. Auto-pack the folded card vertically in the normal map while
+        // retaining the saved offset for re-expansion and all-descendant
+        // presentation/export geometry.
+        let compactsFoldedBranchOffset =
+            placementPolicy == .expandedOnly
+            && node.hasChildren
+            && !node.isExpanded
+        let oy = compactsFoldedBranchOffset
+            ? 0
+            : CGFloat(node.offsetY ?? 0)
         // Snap to whole points so SwiftUI text isn’t painted on fractional
         // origins (which makes some nodes look softer/thinner than others).
         let frame = CGRect(
@@ -406,6 +427,7 @@ public struct LayoutEngine: Sendable {
                 depth: depth,
                 style: node.style,
                 media: node.media,
+                hasNote: node.note?.isEmpty == false,
                 note: includedNote,
                 noteFrame: noteFrame,
                 hasManualPosition: node.hasManualPosition,

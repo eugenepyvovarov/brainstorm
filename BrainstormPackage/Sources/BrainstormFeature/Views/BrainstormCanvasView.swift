@@ -4,6 +4,7 @@ import SwiftUI
 struct BrainstormCanvasView: View {
     // MARK: - Inputs
     @Bindable var store: BrainstormStore
+    @Bindable var viewport: CanvasViewportState
     var focusedNodeID: FocusState<UUID?>.Binding
     let noteEditingNodeID: UUID?
     let isInteractionLocked: Bool
@@ -19,7 +20,6 @@ struct BrainstormCanvasView: View {
     @State private var panOffset: CGSize = .zero
     @State private var panDragOrigin: CGSize = .zero
     @State private var isPanning = false
-    @State private var viewportSize: CGSize = .zero
     @State private var didCenterInitially = false
     /// While true, selection changes do not auto-pan. Cleared after gestures end
     /// so keyboard navigation can re-center again.
@@ -27,6 +27,7 @@ struct BrainstormCanvasView: View {
     /// In-flight free-position drag (document points). Store is NOT mutated until end.
     @State private var freeDrag: FreeDragSession?
     @State private var magnificationBaseZoom: CGFloat?
+    @State private var clearAutoCenterTask: Task<Void, Never>?
     /// Reference storage avoids invalidating the whole canvas on every pointer move.
     @State private var zoomInteraction = CanvasZoomInteraction()
     /// Reference storage makes the mouse-down modifier snapshot visible to the
@@ -48,14 +49,14 @@ struct BrainstormCanvasView: View {
         let layout = layoutCache.layout(
             root: store.root,
             structureEpoch: store.structureEpoch,
-            noteEpoch: 0,
+            noteEpoch: store.noteEpoch,
             liveTitle: liveTitle,
             noteInclusion: .none
         )
         let focusTarget = store.editingID ?? store.selectedID
         let focusSet = store.isFocusMode ? store.focusVisibleIDs() : nil
         let searchSet = Set(store.searchMatchIDs)
-        let zoom = store.zoomScale
+        let zoom = viewport.zoomScale
         let edges = adjustedEdges(layout.edges, freeDrag: freeDrag)
 
         GeometryReader { geo in
@@ -66,7 +67,8 @@ struct BrainstormCanvasView: View {
                     edges: edges,
                     focusSet: focusSet,
                     searchSet: searchSet,
-                    zoom: zoom
+                    zoom: zoom,
+                    viewportSize: geo.size
                 )
             }
             .overlay(alignment: .topTrailing) {
@@ -99,24 +101,31 @@ struct BrainstormCanvasView: View {
             )
             .gesture(magnificationGesture)
             .onAppear {
-                viewportSize = geo.size
                 if !didCenterInitially {
                     didCenterInitially = true
                     centerOn(focusTarget, in: layout, viewport: geo.size, zoom: zoom, animated: false)
                 }
             }
-            .onChange(of: geo.size) { _, newSize in viewportSize = newSize }
             .onChange(of: zoom) { oldZoom, newZoom in
+                if zoomInteraction.locallyAppliedScale == newZoom {
+                    zoomInteraction.locallyAppliedScale = nil
+                    zoomInteraction.pendingAnchor = nil
+                    return
+                }
                 let anchor = zoomInteraction.pendingAnchor
                     ?? zoomInteraction.lastPointerLocation
                     ?? CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
-                panOffset = CanvasZoomTransform.panOffset(
-                    preservingDocumentPointAt: anchor,
-                    from: oldZoom,
-                    to: newZoom,
-                    currentPan: panOffset
-                )
-                panDragOrigin = panOffset
+                var transaction = Transaction()
+                transaction.animation = nil
+                withTransaction(transaction) {
+                    panOffset = CanvasZoomTransform.panOffset(
+                        preservingDocumentPointAt: anchor,
+                        from: oldZoom,
+                        to: newZoom,
+                        currentPan: panOffset
+                    )
+                    panDragOrigin = panOffset
+                }
                 zoomInteraction.pendingAnchor = nil
             }
             .onChange(of: focusTarget) { _, newID in
@@ -128,6 +137,10 @@ struct BrainstormCanvasView: View {
             focusedNodeID.wrappedValue = nil
             guard let newID else { return }
             DispatchQueue.main.async { focusedNodeID.wrappedValue = newID }
+        }
+        .onDisappear {
+            clearAutoCenterTask?.cancel()
+            clearAutoCenterTask = nil
         }
         .alert("Change Parent?", isPresented: pendingReparentAlertBinding) {
             Button("Move") {
@@ -163,14 +176,43 @@ struct BrainstormCanvasView: View {
         edges: [LayoutEdge],
         focusSet: Set<UUID>?,
         searchSet: Set<UUID>,
-        zoom: CGFloat
+        zoom: CGFloat,
+        viewportSize: CGSize
     ) -> some View {
         // Expand document bounds while free-dragging so live edge previews aren’t clipped
         // when the node is pulled past the current content rect.
         let docSize = expandedContentSize(base: layout.contentSize, edges: edges, freeDrag: freeDrag)
+        let visibleRect = CanvasViewportCulling.visibleDocumentRect(
+            viewportSize: viewportSize,
+            panOffset: panOffset,
+            zoom: zoom
+        )
+        var retainedNodeIDs = store.selectedIDs
+        if let editingID = store.editingID { retainedNodeIDs.insert(editingID) }
+        if let draggedID = freeDrag?.nodeID { retainedNodeIDs.insert(draggedID) }
+        if let dropTargetID { retainedNodeIDs.insert(dropTargetID) }
+        if let noteEditingNodeID { retainedNodeIDs.insert(noteEditingNodeID) }
+        if let pendingNodeID = pendingReparent?.nodeID {
+            retainedNodeIDs.insert(pendingNodeID)
+        }
+        let visibleNodes = layout.nodes.filter { node in
+            retainedNodeIDs.contains(node.id)
+                || visibleRect.intersects(displayFrame(for: node))
+        }
+        let visibleEdges = edges.filter { edge in
+            retainedNodeIDs.contains(edge.fromID)
+                || retainedNodeIDs.contains(edge.toID)
+                || visibleRect.intersects(
+                    CanvasViewportCulling.bounds(for: edge)
+                )
+        }
 
         return ZStack(alignment: .topLeading) {
-            EdgeCanvas(edges: edges, theme: store.theme, canvasSize: docSize)
+            EdgeCanvas(
+                edges: visibleEdges,
+                theme: store.theme,
+                canvasSize: docSize
+            )
                 .frame(width: docSize.width, height: docSize.height)
                 .allowsHitTesting(false)
 
@@ -180,7 +222,7 @@ struct BrainstormCanvasView: View {
                     .allowsHitTesting(false)
             }
 
-            ForEach(layout.nodes) { node in
+            ForEach(visibleNodes) { node in
                 if node.id != noteEditingNodeID {
                     // Removing the selected card lets matched geometry carry
                     // that exact node into the foreground note surface.
@@ -204,6 +246,7 @@ struct BrainstormCanvasView: View {
         edges: [LayoutEdge],
         freeDrag: FreeDragSession?
     ) -> CGSize {
+        guard freeDrag != nil else { return base }
         var width = base.width
         var height = base.height
         let pad: CGFloat = 64
@@ -219,6 +262,16 @@ struct BrainstormCanvasView: View {
         return CGSize(width: width, height: height)
     }
 
+    private func displayFrame(for node: LayoutNode) -> CGRect {
+        guard let freeDrag, freeDrag.nodeID == node.id else {
+            return node.frame
+        }
+        return node.frame.offsetBy(
+            dx: freeDrag.delta.width,
+            dy: freeDrag.delta.height
+        )
+    }
+
     private func nodeView(
         _ node: LayoutNode,
         layout: LayoutResult,
@@ -226,8 +279,6 @@ struct BrainstormCanvasView: View {
         searchSet: Set<UUID>
     ) -> some View {
         let dimmed = focusSet.map { !$0.contains(node.id) } ?? false
-        let note = store.node(id: node.id)?.note
-        let hasNote = note?.isEmpty == false
         return BrainstormNodeView(
             layoutNode: node,
             isRoot: node.id == store.root.id,
@@ -238,10 +289,10 @@ struct BrainstormCanvasView: View {
             isDimmed: dimmed,
             isFreeDragging: freeDrag?.nodeID == node.id,
             isExporting: false,
-            hasNote: hasNote,
+            hasNote: node.hasNote,
             showNoteAction: uiPreferences.showNotesLayer,
             showNoteIndicator: uiPreferences.showNotesLayer
-                && hasNote,
+                && node.hasNote,
             editSeed: store.editingID == node.id ? store.editingSeed : nil,
             editSelectAll: store.editingID == node.id ? store.editingSelectAll : true,
             noteFocusNamespace: noteFocusNamespace,
@@ -414,7 +465,7 @@ struct BrainstormCanvasView: View {
         location: CGPoint,
         layout: LayoutResult
     ) {
-        let z = max(store.zoomScale, 0.01)
+        let z = max(viewport.zoomScale, 0.01)
         // Translation is in canvas viewport points; convert to document space.
         let delta = CGSize(width: translation.width / z, height: translation.height / z)
         if freeDrag == nil {
@@ -432,7 +483,7 @@ struct BrainstormCanvasView: View {
             freeDrag = session
         }
 
-        let doc = documentPoint(fromCanvas: location, zoom: store.zoomScale)
+        let doc = documentPoint(fromCanvas: location, zoom: viewport.zoomScale)
         let commandHeld = NSEvent.modifierFlags.contains(.command)
 
         // Dropping directly onto another node requests a reparent. Keep ⌘ as
@@ -459,14 +510,14 @@ struct BrainstormCanvasView: View {
         location: CGPoint,
         layout: LayoutResult
     ) {
-        let z = max(store.zoomScale, 0.01)
+        let z = max(viewport.zoomScale, 0.01)
         let delta = CGSize(width: translation.width / z, height: translation.height / z)
         let base = freeDrag?.baseOffset
             ?? CGSize(
                 width: store.node(id: nodeID)?.offsetX ?? 0,
                 height: store.node(id: nodeID)?.offsetY ?? 0
             )
-        let doc = documentPoint(fromCanvas: location, zoom: store.zoomScale)
+        let doc = documentPoint(fromCanvas: location, zoom: viewport.zoomScale)
         let pendingReorder = reorderTarget
         let hit = hitTestNode(at: doc, layout: layout, except: nodeID, freeDrag: freeDrag)
 
@@ -596,6 +647,31 @@ struct BrainstormCanvasView: View {
 
     // MARK: - Scroll / zoom / pan
 
+    private func applyZoom(_ proposedScale: CGFloat, anchor: CGPoint) {
+        let oldZoom = viewport.zoomScale
+        let newZoom = CanvasViewportState.clampedZoom(proposedScale)
+        guard abs(newZoom - oldZoom) > .ulpOfOne else {
+            zoomInteraction.pendingAnchor = nil
+            return
+        }
+        let nextPan = CanvasZoomTransform.panOffset(
+            preservingDocumentPointAt: anchor,
+            from: oldZoom,
+            to: newZoom,
+            currentPan: panOffset
+        )
+        zoomInteraction.lastPointerLocation = anchor
+        zoomInteraction.pendingAnchor = nil
+        zoomInteraction.locallyAppliedScale = newZoom
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            panOffset = nextPan
+            panDragOrigin = nextPan
+            viewport.setZoom(newZoom)
+        }
+    }
+
     private func handleScroll(
         deltaX: CGFloat,
         deltaY: CGFloat,
@@ -609,13 +685,10 @@ struct BrainstormCanvasView: View {
             return
         }
         if isZoom {
-            let oldZoom = store.zoomScale
-            zoomInteraction.lastPointerLocation = location
-            zoomInteraction.pendingAnchor = location
-            store.setZoom(oldZoom * (1 + deltaY * 0.01))
-            if store.zoomScale == oldZoom {
-                zoomInteraction.pendingAnchor = nil
-            }
+            applyZoom(
+                viewport.zoomScale * (1 + deltaY * 0.01),
+                anchor: location
+            )
         } else {
             panOffset.width += deltaX
             panOffset.height += deltaY
@@ -632,16 +705,13 @@ struct BrainstormCanvasView: View {
                 guard freeDrag == nil else { return }
                 // Capture start scale once per gesture; multiply (not compound on mutated zoom).
                 if magnificationBaseZoom == nil {
-                    magnificationBaseZoom = store.zoomScale
+                    magnificationBaseZoom = viewport.zoomScale
                 }
-                let base = magnificationBaseZoom ?? store.zoomScale
-                let oldZoom = store.zoomScale
-                zoomInteraction.lastPointerLocation = value.startLocation
-                zoomInteraction.pendingAnchor = value.startLocation
-                store.setZoom(base * value.magnification)
-                if store.zoomScale == oldZoom {
-                    zoomInteraction.pendingAnchor = nil
-                }
+                let base = magnificationBaseZoom ?? viewport.zoomScale
+                applyZoom(
+                    base * value.magnification,
+                    anchor: value.startLocation
+                )
             }
             .onEnded { _ in
                 magnificationBaseZoom = nil
@@ -675,11 +745,17 @@ struct BrainstormCanvasView: View {
 
     /// After trackpad/scroll pan, re-enable selection auto-center shortly.
     private func scheduleClearSuppressAutoCenter() {
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(350))
+        clearAutoCenterTask?.cancel()
+        clearAutoCenterTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(350))
+            } catch {
+                return
+            }
             if freeDrag == nil, !isPanning {
                 suppressAutoCenter = false
             }
+            clearAutoCenterTask = nil
         }
     }
 
@@ -767,10 +843,47 @@ enum CanvasZoomTransform {
     }
 }
 
+/// Pure viewport math used to avoid instantiating off-screen node views while
+/// retaining enough overscan for smooth pan and zoom.
+enum CanvasViewportCulling {
+    static let defaultScreenOverscan: CGFloat = 260
+
+    static func visibleDocumentRect(
+        viewportSize: CGSize,
+        panOffset: CGSize,
+        zoom: CGFloat,
+        screenOverscan: CGFloat = defaultScreenOverscan
+    ) -> CGRect {
+        let safeZoom = max(zoom, 0.01)
+        let rect = CGRect(
+            x: -panOffset.width / safeZoom,
+            y: -panOffset.height / safeZoom,
+            width: max(0, viewportSize.width) / safeZoom,
+            height: max(0, viewportSize.height) / safeZoom
+        )
+        let documentOverscan = screenOverscan / safeZoom
+        return rect.insetBy(
+            dx: -documentOverscan,
+            dy: -documentOverscan
+        )
+    }
+
+    static func bounds(for edge: LayoutEdge) -> CGRect {
+        CGRect(
+            x: min(edge.from.x, edge.to.x),
+            y: min(edge.from.y, edge.to.y),
+            width: abs(edge.to.x - edge.from.x),
+            height: abs(edge.to.y - edge.from.y)
+        )
+        .insetBy(dx: -4, dy: -4)
+    }
+}
+
 @MainActor
 private final class CanvasZoomInteraction {
     var lastPointerLocation: CGPoint?
     var pendingAnchor: CGPoint?
+    var locallyAppliedScale: CGFloat?
 }
 
 /// Where a dragged node will land among its siblings.
@@ -969,7 +1082,7 @@ struct EdgeCanvas: View {
 
 // MARK: - Layout cache
 
-/// Caches full-tree measure/place results. Pan/zoom only transform the snapshot;
+/// Caches visible-tree measure/place results. Pan/zoom only transform the snapshot;
 /// recompute when `structureEpoch` or the live edit title changes.
 @MainActor
 final class LayoutResultCache {
