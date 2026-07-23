@@ -58,19 +58,28 @@ struct BrainstormNodeView: View {
     @State private var selectAllOnFocus = true
     /// True once this gesture started as a free-drag.
     @State private var freeDragActive = false
+    /// Clears hover only after a short grace period so the pointer can cross
+    /// the gap from the card to fold / + / note accessories without chrome
+    /// collapsing mid-path.
+    @State private var hoverClearTask: Task<Void, Never>?
 
     // MARK: - Derived
 
+    /// Selection or live hover (including sticky accessory travel).
+    private var isInteractionHighlighted: Bool {
+        isSelected || isHovered
+    }
+
     private var showNodeWell: Bool {
         // Dimmed (out-of-focus) nodes stay fully usable — well still appears on hover/select.
-        !isExporting && !isEditing && (isSelected || isHovered)
+        !isExporting && !isEditing && isInteractionHighlighted
     }
 
     private var showNotePill: Bool {
         // The note action remains available while the selected node title is
         // being edited; opening it commits the title through the existing
         // canvas callback before entering the centered note workspace.
-        !isExporting && showNoteAction && (isSelected || isHovered)
+        !isExporting && showNoteAction && isInteractionHighlighted
     }
 
     private var displayTitle: String {
@@ -122,7 +131,7 @@ struct BrainstormNodeView: View {
         // Layout size = card only so selection / + well never shifts siblings horizontally.
         matchedNodeCard
             .overlay(alignment: .trailing) {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     if layoutNode.hasChildren && !isEditing && !isExporting {
                         foldControl
                     }
@@ -131,16 +140,23 @@ struct BrainstormNodeView: View {
                             .transition(.scale.combined(with: .opacity))
                     }
                 }
-                .padding(.leading, 6)
+                // Bridge the card→accessory gap so hover does not drop while
+                // the pointer travels to fold / +.
+                .padding(.leading, 10)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
                 .fixedSize()
                 // Place accessories just past the card’s trailing edge.
                 .alignmentGuide(.trailing) { $0[.leading] }
+                .zIndex(20)
+                .onHover(perform: updateChromeHover)
             }
             .overlay(alignment: .bottom) {
                 if showNotePill {
                     notePill
                         .offset(y: 16)
                         .zIndex(4)
+                        .onHover(perform: updateChromeHover)
                 }
             }
             .overlay {
@@ -160,7 +176,11 @@ struct BrainstormNodeView: View {
             .animation(.easeOut(duration: 0.12), value: showNodeWell)
             .animation(.easeOut(duration: 0.12), value: showNotePill)
             .animation(.easeOut(duration: 0.18), value: isDimmed)
-            .onHover { isHovered = $0 }
+            .onHover(perform: updateChromeHover)
+            .onDisappear {
+                hoverClearTask?.cancel()
+                hoverClearTask = nil
+            }
             .contextMenu { contextMenuItems }
             .onChange(of: isEditing) { _, editing in
                 if editing {
@@ -174,18 +194,40 @@ struct BrainstormNodeView: View {
             }
     }
 
+    /// Sticky hover: keep chrome active briefly after the pointer leaves so
+    /// fold / + / note controls outside the card bounds remain reachable.
+    private func updateChromeHover(_ hovering: Bool) {
+        if hovering {
+            hoverClearTask?.cancel()
+            hoverClearTask = nil
+            if !isHovered {
+                isHovered = true
+            }
+            return
+        }
+        hoverClearTask?.cancel()
+        hoverClearTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            guard !Task.isCancelled else { return }
+            isHovered = false
+            hoverClearTask = nil
+        }
+    }
+
     // MARK: - Node card
 
     @ViewBuilder
     private var matchedNodeCard: some View {
-        if let noteFocusNamespace, isSelected || isHovered {
+        // Keep a stable view identity for the card. Toggling matched geometry
+        // on hover remounted the chrome and made fold / glass flicker.
+        if let noteFocusNamespace {
             nodeCard
                 .matchedGeometryEffect(
                     id: layoutNode.id,
                     in: noteFocusNamespace,
                     properties: .frame,
                     anchor: .center,
-                    isSource: true
+                    isSource: isInteractionHighlighted
                 )
         } else {
             nodeCard
@@ -206,7 +248,7 @@ struct BrainstormNodeView: View {
                 isSelected: isSelected,
                 isDropTarget: isDropTarget,
                 isSearchMatch: isSearchMatch,
-                isHovered: isHovered,
+                isHovered: isInteractionHighlighted,
                 isRoot: isRoot,
                 borderColor: borderColor,
                 borderWidth: borderWidth,
@@ -358,36 +400,51 @@ struct BrainstormNodeView: View {
     private var foldControl: some View {
         let accent = theme.selectionColor
         let collapsed = !layoutNode.isExpanded
+        // Expanded state used to be chevron-only (~16pt wide), so users had to
+        // click the glyph itself. Keep a full capsule hit target in both states.
         return Button(action: onToggleExpand) {
-            HStack(spacing: 3) {
+            HStack(spacing: 4) {
                 Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(collapsed ? accent : Color.secondary)
+                    .frame(width: 14, height: 14)
                 if collapsed {
                     Text("\(layoutNode.childCount)")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(accent)
                 }
             }
-            .padding(.horizontal, collapsed ? 10 : 8)
-            .frame(height: 26)
+            .padding(.horizontal, collapsed ? 10 : 12)
+            .frame(minWidth: collapsed ? 36 : 32, minHeight: 30)
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .brainstormGlassCapsule(interactive: true, tint: collapsed ? accent : nil)
+        .contentShape(Capsule())
+        .help(collapsed ? "Expand branch" : "Collapse branch")
+        .accessibilityLabel(
+            collapsed
+                ? "Expand \(layoutNode.childCount) child nodes"
+                : "Collapse child nodes"
+        )
     }
 
     private var nodeWell: some View {
         let accent = theme.selectionColor
         return Button(action: onAddChild) {
             Image(systemName: "plus")
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(.white)
-                .frame(width: 24, height: 24)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
                 .background(Circle().fill(accent.gradient))
                 .shadow(color: accent.opacity(0.4), radius: 4, y: 1)
         }
         .buttonStyle(.plain)
+        .contentShape(Circle())
+        .help("Add child")
+        .accessibilityLabel("Add child node")
     }
 
     private var notePill: some View {

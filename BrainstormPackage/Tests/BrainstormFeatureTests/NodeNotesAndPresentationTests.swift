@@ -3258,83 +3258,32 @@ struct NodeNotesAndPresentationTests {
         webView.stopLoading()
     }
 
-    @Test func htmlVisibleAllAndNoneDoNotLeakExcludedPayloads() throws {
+    @Test func htmlAlwaysEmbedsNotesForViewerToggle() throws {
         let root = exportFixture()
 
-        let visible = try htmlString(
-            root: root,
-            options: BrainstormExportOptions(noteInclusion: .visible)
-        )
-        #expect(visible.contains("VISIBLE-NOTE-TOKEN-7A"))
-        #expect(visible.contains(firstVideoID))
-        #expect(!visible.contains("PRIVATE-NOTE-TOKEN-9B"))
-        #expect(!visible.contains(secondVideoID))
-        #expect(visible.contains(#"class="map-note-marker""#))
-        #expect(visible.contains(#"data-map-note-node-id=""#))
-        #expect(visible.contains(#"class="node shape-roundedRect map-node-flippable""#))
-        #expect(visible.contains(#"data-has-note="true""#))
-        #expect(visible.contains(#"data-face="node""#))
-        #expect(
-            visible.contains(
-                #"data-node-id="00000000-0000-0000-0000-000000000501""#
+        // noteInclusion is ignored for HTML: every non-empty note is embedded
+        // so the in-page Notes checkbox can enable steps without re-exporting.
+        for inclusion: BrainstormNoteInclusion in [.visible, .all, .none] {
+            let html = try htmlString(
+                root: root,
+                options: BrainstormExportOptions(noteInclusion: inclusion)
             )
-        )
-        #expect(visible.contains(#"tabindex="0""#))
-        #expect(visible.contains("Has note. Press Enter to show it."))
-        #expect(!visible.contains(#"id="notes-button""#))
-        #expect(visible.contains(#"role="img""#))
-        #expect(visible.contains(#"aria-label="Has note: "#))
-        #expect(
-            !visible.contains("<button\n          class=\"map-note-marker\"")
-        )
-        #expect(visible.contains(#"class="map-node-flip""#))
-        #expect(visible.contains(#"class="map-node-note-back""#))
-        #expect(visible.contains("data-map-note-close"))
-        #expect(
-            visible.components(separatedBy: "VISIBLE-NOTE-TOKEN-7A").count == 3,
-            "The included note should appear once on the map back and once in presentation."
-        )
-
-        let all = try htmlString(
-            root: root,
-            options: BrainstormExportOptions(noteInclusion: .all)
-        )
-        #expect(all.contains("VISIBLE-NOTE-TOKEN-7A"))
-        #expect(all.contains("PRIVATE-NOTE-TOKEN-9B"))
-        #expect(all.contains(firstVideoID))
-        #expect(all.contains(secondVideoID))
-        #expect(all.contains(#"data-saved-visible="false""#))
-
-        let none = try htmlString(
-            root: root,
-            options: BrainstormExportOptions(noteInclusion: .none)
-        )
-        #expect(!none.contains("VISIBLE-NOTE-TOKEN-7A"))
-        #expect(!none.contains("PRIVATE-NOTE-TOKEN-9B"))
-        #expect(!none.contains(firstVideoID))
-        #expect(!none.contains(secondVideoID))
-        #expect(
-            !none.contains(
-                #"class="node shape-roundedRect map-node-flippable""#
+            #expect(html.contains("VISIBLE-NOTE-TOKEN-7A"))
+            #expect(html.contains("PRIVATE-NOTE-TOKEN-9B"))
+            #expect(html.contains(firstVideoID))
+            #expect(html.contains(secondVideoID))
+            #expect(html.contains(#"data-saved-visible="false""#))
+            #expect(html.contains(#"id="include-notes-checkbox""#))
+            #expect(html.contains("let notesEnabled = false;"))
+            #expect(html.contains(#"class="notes-disabled""#))
+            #expect(html.contains(#"class="map-node-flip""#))
+            #expect(html.contains(#"class="map-node-note-back""#))
+            #expect(html.contains(#"data-has-note="true""#))
+            #expect(
+                html.components(separatedBy: "VISIBLE-NOTE-TOKEN-7A").count == 3,
+                "The included note should appear once on the map back and once in presentation."
             )
-        )
-        #expect(!none.contains(#"class="map-node-note-close""#))
-        #expect(
-            !none.contains(
-                #"data-map-note-node-id="00000000-0000-0000-0000-000000000501""#
-            )
-        )
-        #expect(!none.contains(#"class="map-note-marker""#))
-        #expect(
-            !none.contains(
-                """
-                data-has-note="true"
-                          data-node-id="00000000-0000-0000-0000-000000000501"
-                """
-            )
-        )
-        #expect(!none.contains(#"data-video-id="\#(firstVideoID)""#))
-        #expect(!none.contains(#"data-video-id="\#(secondVideoID)""#))
+        }
     }
 
     private func exportFixture() -> BrainstormNode {

@@ -68,8 +68,11 @@ brainstorm update launch.bs --node root \
   --note-youtube "https://youtu.be/M7lc1UVf-VE?t=30" \
   --note-youtube-caption "Reference walkthrough"
 
-# Export a vector web viewer that opens in presentation mode with every note.
-brainstorm export launch.bs --format html --notes all --presentation --output launch.html
+# Export a vector web viewer. Prefer a portable filename (underscores, no
+# specials). HTML always embeds notes; the viewer Notes checkbox (default off)
+# toggles note steps live. App panel only offers Open in presentation mode.
+brainstorm export launch.bs --format html --output launch.html
+brainstorm export launch.bs --format html --presentation --output launch.html
 
 # PNG/PDF always export a note-free map; Markdown can explicitly omit note bytes.
 brainstorm export launch.bs --format pdf --output launch.pdf

@@ -68,10 +68,13 @@ readable; new saves use v3 so node notes are preserved.
 
 Export a map as self-contained interactive HTML, PNG, PDF, Markdown, Mermaid,
 or PlantUML. Every export includes the complete tree with all branches expanded;
-fold state is kept only in the live `.bs` canvas. HTML can include notes and open
-directly in presentation mode. Markdown exports with notes are ZIP bundles
-containing the outline, separate note files, and image assets. PNG and PDF always
-stay clean, without notes.
+fold state is kept only in the live `.bs` canvas. HTML export suggests a portable
+filename (spaces become underscores; special characters are removed) and offers
+**Open in presentation mode** in the save panel. Notes are always embedded in
+HTML and can be turned on or off live with the viewer’s **Notes** checkbox
+(off by default). Markdown still chooses shown / all / no notes. Markdown
+exports with notes are ZIP bundles containing the outline, separate note files,
+and image assets. PNG and PDF always stay clean, without notes.
 
 ## CLI
 

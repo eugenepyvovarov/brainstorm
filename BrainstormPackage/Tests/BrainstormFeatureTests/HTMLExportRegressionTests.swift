@@ -6,6 +6,65 @@ import Testing
 @Suite("HTML and note export regressions")
 @MainActor
 struct HTMLExportRegressionTests {
+    @Test func htmlExportBaseNameUsesUnderscoresAndStripsSpecialCharacters() {
+        #expect(
+            BrainstormExporter.sanitizedExportBaseName("My Cool Map!")
+                == "My_Cool_Map"
+        )
+        #expect(
+            BrainstormExporter.sanitizedExportBaseName("  Launch / Plan?  ")
+                == "Launch_Plan"
+        )
+        #expect(
+            BrainstormExporter.sanitizedExportBaseName("hello-world_v2")
+                == "hello-world_v2"
+        )
+        #expect(BrainstormExporter.sanitizedExportBaseName("   ") == "Untitled")
+        #expect(BrainstormExporter.sanitizedExportBaseName("@@@") == "Untitled")
+        #expect(
+            BrainstormExportOptions.htmlDefault.noteInclusion == .all
+        )
+        #expect(
+            BrainstormExportOptions.htmlDefault.htmlInitialMode == .map
+        )
+    }
+
+    @Test func htmlViewerTogglesNotesLiveWithoutExportPanelOption() throws {
+        let root = BrainstormNode(
+            title: "Root",
+            children: [
+                BrainstormNode(
+                    title: "Noted",
+                    note: NodeNote(bodyMarkdown: "Live toggle target")
+                ),
+            ]
+        )
+        // Even when callers request no notes, HTML embeds them for the viewer.
+        let data = try BrainstormExporter.data(
+            root: root,
+            theme: .dracula,
+            colorScheme: .dark,
+            format: .html,
+            options: BrainstormExportOptions(
+                noteInclusion: .none,
+                htmlInitialMode: .map
+            )
+        )
+        let html = String(decoding: data, as: UTF8.self)
+
+        #expect(html.contains(#"id="include-notes-checkbox""#))
+        #expect(html.contains("class=\"include-notes-toggle\""))
+        #expect(html.contains("let notesEnabled = false;"))
+        #expect(html.contains("const applyNotesEnabled"))
+        #expect(html.contains("const slideHasActiveNote"))
+        #expect(html.contains("const rebuildPresentationStepCounts"))
+        #expect(html.contains("body.notes-disabled"))
+        #expect(html.contains(#"class="notes-disabled""#))
+        #expect(html.contains("Live toggle target"))
+        #expect(html.contains(#"data-has-note="true""#))
+        #expect(!html.contains("Include notes in HTML export"))
+    }
+
     @Test func overflowingOrderedListFallsBackWithoutTrappingRenderers() {
         let source = """
         \(Int.max). First

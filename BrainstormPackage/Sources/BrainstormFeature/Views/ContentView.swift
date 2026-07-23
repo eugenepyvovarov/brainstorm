@@ -1217,7 +1217,10 @@ public struct ContentView: View {
         if store.isEditing { store.commitEditing() }
 
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(store.mapName).\(format.fileExtension)"
+        let suggestedBase = format == .html
+            ? BrainstormExporter.sanitizedExportBaseName(store.mapName)
+            : store.mapName
+        panel.nameFieldStringValue = "\(suggestedBase).\(format.fileExtension)"
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         panel.allowsOtherFileTypes = false
@@ -1230,7 +1233,10 @@ public struct ContentView: View {
                 options: options
             )
             let currentName = panel.nameFieldStringValue
-            let baseName = (currentName as NSString).deletingPathExtension
+            var baseName = (currentName as NSString).deletingPathExtension
+            if format == .html {
+                baseName = BrainstormExporter.sanitizedExportBaseName(baseName)
+            }
             panel.allowedContentTypes = [descriptor.contentType]
             panel.nameFieldStringValue =
                 "\(baseName).\(descriptor.fileExtension)"
@@ -1388,13 +1394,13 @@ private struct CanvasActualSizeButton: View {
     }
 }
 
-/// Native save-panel controls for the note layer and HTML launch mode. Keeping
-/// the choices in the panel makes them available from both the toolbar and the
-/// File menu without duplicating every export command.
+/// Native save-panel controls for Markdown note inclusion and HTML launch mode.
+/// HTML notes are toggled inside the exported viewer, not at export time.
 @MainActor
 private final class BrainstormExportAccessoryView: NSView {
     private let format: BrainstormExportFormat
     private let onOptionsChanged: (BrainstormExportOptions) -> Void
+    /// Markdown keeps the three-way inclusion policy.
     private let noteInclusionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let presentationCheckbox = NSButton(
         checkboxWithTitle: "Open in presentation mode",
@@ -1413,9 +1419,11 @@ private final class BrainstormExportAccessoryView: NSView {
 
     var options: BrainstormExportOptions {
         let inclusion: BrainstormNoteInclusion
-        if format != .html && format != .markdown {
-            inclusion = .none
-        } else {
+        switch format {
+        case .html:
+            // HTML always embeds notes; the viewer toggles them live.
+            inclusion = .all
+        case .markdown:
             switch noteInclusionPopup.indexOfSelectedItem {
             case 1:
                 inclusion = .all
@@ -1424,6 +1432,8 @@ private final class BrainstormExportAccessoryView: NSView {
             default:
                 inclusion = .visible
             }
+        case .png, .pdf, .mermaid, .plantuml:
+            inclusion = .none
         }
         return BrainstormExportOptions(
             noteInclusion: inclusion,
@@ -1439,41 +1449,41 @@ private final class BrainstormExportAccessoryView: NSView {
     ) {
         self.format = format
         self.onOptionsChanged = onOptionsChanged
-        super.init(frame: NSRect(x: 0, y: 0, width: 360, height: format == .html ? 74 : 40))
+        super.init(frame: NSRect(x: 0, y: 0, width: 360, height: 40))
 
-        noteInclusionPopup.addItems(withTitles: [
-            "Shown notes only",
-            "All notes",
-            "No notes",
-        ])
-        noteInclusionPopup.selectItem(at: 0)
-        noteInclusionPopup.setAccessibilityLabel("Notes included in export")
-        noteInclusionPopup.target = self
-        noteInclusionPopup.action = #selector(exportOptionsDidChange)
+        var rows: [NSView] = []
+        var popupWidthConstraint: NSLayoutConstraint?
 
-        let noteLabel = NSTextField(labelWithString: "Notes:")
-        noteLabel.alignment = .right
-        noteLabel.setContentHuggingPriority(.required, for: .horizontal)
-
-        let noteRow = NSStackView(views: [noteLabel, noteInclusionPopup])
-        noteRow.orientation = .horizontal
-        noteRow.alignment = .centerY
-        noteRow.spacing = 10
-        noteInclusionPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        var rows: [NSView] = [noteRow]
         if format == .html {
+            presentationCheckbox.state = .off
             presentationCheckbox.setAccessibilityLabel("Open HTML in presentation mode")
             presentationCheckbox.target = self
             presentationCheckbox.action = #selector(exportOptionsDidChange)
-            let presentationRow = NSStackView(views: [
-                NSView(frame: NSRect(x: 0, y: 0, width: 54, height: 1)),
-                presentationCheckbox,
+            rows.append(presentationCheckbox)
+        } else if format == .markdown {
+            noteInclusionPopup.addItems(withTitles: [
+                "Shown notes only",
+                "All notes",
+                "No notes",
             ])
-            presentationRow.orientation = .horizontal
-            presentationRow.alignment = .centerY
-            presentationRow.spacing = 10
-            rows.append(presentationRow)
+            noteInclusionPopup.selectItem(at: 0)
+            noteInclusionPopup.setAccessibilityLabel("Notes included in export")
+            noteInclusionPopup.target = self
+            noteInclusionPopup.action = #selector(exportOptionsDidChange)
+
+            let noteLabel = NSTextField(labelWithString: "Notes:")
+            noteLabel.alignment = .right
+            noteLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+            let noteRow = NSStackView(views: [noteLabel, noteInclusionPopup])
+            noteRow.orientation = .horizontal
+            noteRow.alignment = .centerY
+            noteRow.spacing = 10
+            noteInclusionPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            popupWidthConstraint = noteInclusionPopup.widthAnchor.constraint(
+                greaterThanOrEqualToConstant: 220
+            )
+            rows.append(noteRow)
         }
 
         let stack = NSStackView(views: rows)
@@ -1482,13 +1492,16 @@ private final class BrainstormExportAccessoryView: NSView {
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
-        NSLayoutConstraint.activate([
+        var constraints: [NSLayoutConstraint] = [
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stack.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -6),
-            noteInclusionPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
-        ])
+        ]
+        if let popupWidthConstraint {
+            constraints.append(popupWidthConstraint)
+        }
+        NSLayoutConstraint.activate(constraints)
     }
 
     @available(*, unavailable)

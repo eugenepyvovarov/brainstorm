@@ -90,6 +90,12 @@ public struct BrainstormExportOptions: Equatable, Sendable {
     }
 
     public static let `default` = BrainstormExportOptions()
+
+    /// HTML always embeds notes for an in-viewer toggle; launch on the map.
+    public static let htmlDefault = BrainstormExportOptions(
+        noteInclusion: .all,
+        htmlInitialMode: .map
+    )
 }
 
 public struct BrainstormExportDescriptor: Equatable, Sendable {
@@ -135,6 +141,43 @@ public enum BrainstormExporter {
     private static let maximumPNGDimension: CGFloat = 16_384
     private static let maximumPNGPixelCount: CGFloat = 64_000_000
     private static let maximumPDFDimension: CGFloat = 14_400
+
+    /// Suggested export basename: spaces become underscores and special
+    /// characters are removed so HTML downloads stay portable across hosts.
+    public static func sanitizedExportBaseName(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Untitled" }
+
+        var result = ""
+        result.reserveCapacity(trimmed.count)
+        var previousWasSeparator = false
+        for scalar in trimmed.unicodeScalars {
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                if !previousWasSeparator && !result.isEmpty {
+                    result.append("_")
+                    previousWasSeparator = true
+                }
+                continue
+            }
+            if CharacterSet.alphanumerics.contains(scalar)
+                || scalar == "_"
+                || scalar == "-"
+            {
+                result.unicodeScalars.append(scalar)
+                previousWasSeparator = scalar == "_" || scalar == "-"
+                continue
+            }
+            // Drop punctuation and other specials without introducing separators.
+        }
+
+        while result.hasPrefix("_") || result.hasPrefix("-") {
+            result.removeFirst()
+        }
+        while result.hasSuffix("_") || result.hasSuffix("-") {
+            result.removeLast()
+        }
+        return result.isEmpty ? "Untitled" : result
+    }
 
     public static func descriptor(
         root: BrainstormNode,
@@ -196,6 +239,14 @@ public enum BrainstormExporter {
         // Folded branches are a live-canvas concern only. Every visual export
         // lays out the complete stored tree so PNG/PDF/HTML always include
         // descendants that remain collapsed in the `.bs` document.
+        // HTML always embeds every non-empty note so the viewer can toggle
+        // note steps live; the in-page Notes checkbox starts unchecked.
+        let resolvedOptions = format == .html
+            ? BrainstormExportOptions(
+                noteInclusion: .all,
+                htmlInitialMode: options.htmlInitialMode
+            )
+            : options
         let layoutNoteInclusion = layoutNoteInclusion(for: format)
         let layout = LayoutEngine().layout(
             root: root,
@@ -225,7 +276,7 @@ public enum BrainstormExporter {
                 colorScheme: colorScheme,
                 mapTitle: root.title,
                 root: root,
-                options: options
+                options: resolvedOptions
             )
         case .markdown, .mermaid, .plantuml:
             preconditionFailure("Text exports return before canvas layout")

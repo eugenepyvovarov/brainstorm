@@ -561,6 +561,38 @@ enum BrainstormHTMLRenderer {
               background: var(--control-active);
               color: var(--control-active-text);
             }
+            #viewer-controls .include-notes-toggle {
+              display: inline-flex;
+              align-items: center;
+              gap: 6px;
+              min-height: 32px;
+              padding: 0 10px;
+              border-radius: 999px;
+              color: var(--note-secondary);
+              font-size: 13px;
+              font-weight: 500;
+              cursor: pointer;
+              user-select: none;
+              -webkit-user-select: none;
+            }
+            #viewer-controls .include-notes-toggle:hover {
+              color: var(--note-text);
+            }
+            #viewer-controls .include-notes-toggle input {
+              width: 14px;
+              height: 14px;
+              margin: 0;
+              accent-color: var(--accent);
+              cursor: pointer;
+            }
+            body.notes-disabled .map-node-note-indicator,
+            body.notes-disabled .presentation-note-indicator,
+            body.notes-disabled .presentation-node-note-indicator {
+              display: none !important;
+            }
+            body.notes-disabled .node[data-has-note="true"] {
+              cursor: default;
+            }
             #brainstorm-attribution {
               position: fixed;
               z-index: 90;
@@ -1180,6 +1212,7 @@ enum BrainstormHTMLRenderer {
           </style>
         </head>
         <body
+          class="notes-disabled"
           style="--note-background: \(palette.controlBackground.css); --note-text: \(palette.primary.css); --note-secondary: \(palette.secondary.css); --note-border: \(palette.primary.withOpacity(palette.isDark ? 0.22 : 0.14).css); --accent: \(palette.accent.css); --accent-contrast: \(contrastText(for: palette.accent).css); --toolbar-background: \(palette.controlBackground.withOpacity(0.94).css); --toolbar-border: \(palette.primary.withOpacity(0.14).css); --control-active: \(palette.selection.css); --control-active-text: \(contrastText(for: palette.selection).css); --presentation-glow: \(palette.selection.withOpacity(0.18).css); --canvas: \(palette.canvas.css); --grid: \(palette.grid.css);"
         >
           <nav id="viewer-controls" aria-label="Viewer controls">
@@ -1193,6 +1226,14 @@ enum BrainstormHTMLRenderer {
               type="button"
               aria-pressed="\(options.htmlInitialMode == .presentation)"
             >Present</button>
+            <label class="include-notes-toggle" for="include-notes-checkbox">
+              <input
+                id="include-notes-checkbox"
+                type="checkbox"
+                autocomplete="off"
+              >
+              Notes
+            </label>
             <span
               id="presentation-progress"
               aria-live="polite"
@@ -1366,6 +1407,8 @@ enum BrainstormHTMLRenderer {
               const mapModeButton = document.getElementById("map-mode-button");
               const presentationModeButton =
                 document.getElementById("presentation-mode-button");
+              const includeNotesCheckbox =
+                document.getElementById("include-notes-checkbox");
               const progress = document.getElementById("presentation-progress");
               const previousPresentationButton =
                 document.getElementById("presentation-previous-button");
@@ -1387,9 +1430,14 @@ enum BrainstormHTMLRenderer {
               const mapHeight = Number(viewport.dataset.mapHeight);
               let currentMode = "\(options.htmlInitialMode.rawValue)";
               let currentSlideIndex = 0;
+              // Notes ship embedded; the toolbar checkbox starts off so node
+              // slides stay the default path until the reader opts in.
+              let notesEnabled = false;
               const currentSlide = () => slides[currentSlideIndex] ?? null;
+              const slideHasActiveNote = slide =>
+                notesEnabled && slide?.dataset.hasNote === "true";
               const stepCountForSlide = slide =>
-                slide?.dataset.hasNote === "true" ? 2 : 1;
+                slideHasActiveNote(slide) ? 2 : 1;
               const slideIndexByElement = new WeakMap();
               const slideByNodeID = new Map();
               const childrenByParentID = new Map();
@@ -1398,10 +1446,15 @@ enum BrainstormHTMLRenderer {
               let presentationStepCount = 0;
               const parentSiblingKey = (parentID, siblingIndex) =>
                 `${parentID}\\u0000${siblingIndex}`;
+              const rebuildPresentationStepCounts = () => {
+                presentationStepCount = 0;
+                slides.forEach((slide, index) => {
+                  presentationStepOffsets[index] = presentationStepCount;
+                  presentationStepCount += stepCountForSlide(slide);
+                });
+              };
               slides.forEach((slide, index) => {
                 slideIndexByElement.set(slide, index);
-                presentationStepOffsets[index] = presentationStepCount;
-                presentationStepCount += stepCountForSlide(slide);
                 const nodeID = slide.dataset.nodeId;
                 if (nodeID) slideByNodeID.set(nodeID, slide);
                 const parentID = slide.dataset.parentId || "";
@@ -1417,6 +1470,7 @@ enum BrainstormHTMLRenderer {
                   );
                 }
               });
+              rebuildPresentationStepCounts();
               childrenByParentID.forEach(children => {
                 children.sort(
                   (first, second) =>
@@ -1426,7 +1480,12 @@ enum BrainstormHTMLRenderer {
               });
               const presentationStepIndex = () =>
                 (presentationStepOffsets[currentSlideIndex] ?? 0)
-                  + (currentSlide()?.dataset.face === "note" ? 1 : 0);
+                  + (
+                    slideHasActiveNote(currentSlide())
+                    && currentSlide()?.dataset.face === "note"
+                      ? 1
+                      : 0
+                  );
               const syncPresentationEdgeNavigation = () => {
                 const stepIndex = presentationStepIndex();
                 previousPresentationButton.hidden =
@@ -2491,7 +2550,7 @@ enum BrainstormHTMLRenderer {
               const setSlideFace = (slide, face) => {
                 if (!slide) return;
                 const showsNote =
-                  face === "note" && slide.dataset.hasNote === "true";
+                  face === "note" && slideHasActiveNote(slide);
                 slide.dataset.face = showsNote ? "note" : "node";
                 slide
                   .querySelector(".presentation-node-front")
@@ -2503,6 +2562,23 @@ enum BrainstormHTMLRenderer {
 
               const resetPresentationFaces = () => {
                 slides.forEach(slide => setSlideFace(slide, "node"));
+              };
+
+              const applyNotesEnabled = () => {
+                document.body.classList.toggle("notes-enabled", notesEnabled);
+                document.body.classList.toggle("notes-disabled", !notesEnabled);
+                if (includeNotesCheckbox) {
+                  includeNotesCheckbox.checked = notesEnabled;
+                }
+                if (!notesEnabled) {
+                  resetPresentationFaces();
+                  resetMapNodeFaces();
+                }
+                rebuildPresentationStepCounts();
+                if (currentMode === "presentation") {
+                  updatePresentation(0, true, []);
+                }
+                syncPresentationEdgeNavigation();
               };
 
               const presentationCameraRoute = (source, target) => {
@@ -2528,12 +2604,16 @@ enum BrainstormHTMLRenderer {
                 if (
                   delta > 0
                   && source.dataset.face === "node"
-                  && source.dataset.hasNote === "true"
+                  && slideHasActiveNote(source)
                 ) {
                   toggleCurrentNote();
                   return;
                 }
-                if (delta < 0 && source.dataset.face === "note") {
+                if (
+                  delta < 0
+                  && source.dataset.face === "note"
+                  && slideHasActiveNote(source)
+                ) {
                   toggleCurrentNote();
                   return;
                 }
@@ -2547,10 +2627,7 @@ enum BrainstormHTMLRenderer {
                 suppressSlideClicksDuringTravel(cameraRoute);
                 resetPresentationFaces();
                 currentSlideIndex = next;
-                if (
-                  delta < 0
-                  && currentSlide()?.dataset.hasNote === "true"
-                ) {
+                if (delta < 0 && slideHasActiveNote(currentSlide())) {
                   setSlideFace(currentSlide(), "note");
                 }
                 updatePresentation(delta, true, cameraRoute);
@@ -2611,7 +2688,7 @@ enum BrainstormHTMLRenderer {
 
               const toggleCurrentNote = () => {
                 const slide = currentSlide();
-                if (!slide || slide.dataset.hasNote !== "true") return;
+                if (!slide || !slideHasActiveNote(slide)) return;
                 const nextFace =
                   slide.dataset.face === "note" ? "node" : "note";
                 setSlideFace(slide, nextFace);
@@ -2626,7 +2703,11 @@ enum BrainstormHTMLRenderer {
                 face,
                 syncViewportTouchAction = true
               ) => {
-                if (!node || node.dataset.hasNote !== "true") return;
+                if (
+                  !node
+                  || node.dataset.hasNote !== "true"
+                  || (!notesEnabled && face === "note")
+                ) return;
                 const showsNote = face === "note";
                 node.dataset.face = showsNote ? "note" : "node";
                 node.setAttribute("aria-expanded", String(showsNote));
@@ -2662,6 +2743,7 @@ enum BrainstormHTMLRenderer {
               const openMapNodeNote = node => {
                 if (
                   currentMode !== "map"
+                  || !notesEnabled
                   || node?.dataset.hasNote !== "true"
                 ) return;
                 const showsNote = node.dataset.face !== "note";
@@ -3031,7 +3113,7 @@ enum BrainstormHTMLRenderer {
                     event.preventDefault();
                     resetPresentationFaces();
                     currentSlideIndex = Math.max(0, slides.length - 1);
-                    if (currentSlide()?.dataset.hasNote === "true") {
+                    if (slideHasActiveNote(currentSlide())) {
                       setSlideFace(currentSlide(), "note");
                     }
                     updatePresentation(1);
@@ -3109,6 +3191,10 @@ enum BrainstormHTMLRenderer {
                 "click",
                 () => setMode("presentation")
               );
+              includeNotesCheckbox?.addEventListener("change", () => {
+                notesEnabled = includeNotesCheckbox.checked;
+                applyNotesEnabled();
+              });
               previousPresentationButton.addEventListener(
                 "click",
                 () => navigatePresentation(-1)
@@ -3331,7 +3417,7 @@ enum BrainstormHTMLRenderer {
                 if (index < 0) return;
                 if (index === currentSlideIndex) {
                   if (slide.dataset.face === "node") {
-                    if (slide.dataset.hasNote === "true") {
+                    if (slideHasActiveNote(slide)) {
                       toggleCurrentNote();
                     } else {
                       navigatePresentation(1);
@@ -3360,7 +3446,7 @@ enum BrainstormHTMLRenderer {
                       currentSlideIndex = index;
                       if (
                         parameters.get("face") === "note"
-                        && currentSlide()?.dataset.hasNote === "true"
+                        && slideHasActiveNote(currentSlide())
                       ) {
                         setSlideFace(currentSlide(), "note");
                       }
