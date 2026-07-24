@@ -12,6 +12,7 @@ struct BrainstormCanvasView: View {
     let onOpenNote: (UUID) -> Void
 
     // MARK: - State
+    @State private var uiPreferences = BrainstormUIPreferences.shared
     @State private var dropTargetID: UUID?
     /// A valid node-on-node drop waiting for user confirmation.
     @State private var pendingReparent: PendingReparent?
@@ -45,13 +46,20 @@ struct BrainstormCanvasView: View {
             guard let id = store.editingID else { return nil }
             return LayoutEngine.LiveTitleOverride(id: id, title: store.editingDraft)
         }()
+        let showTasks = uiPreferences.showTaskCompleteness(
+            fileURL: store.fileURL,
+            documentID: store.documentID
+        )
         let layout = layoutCache.layout(
             root: store.root,
             structureEpoch: store.structureEpoch,
             noteEpoch: store.noteEpoch,
             liveTitle: liveTitle,
-            noteInclusion: .none
+            noteInclusion: .none,
+            showTaskCompleteness: showTasks
         )
+        // Read taskEpoch so task toggles repaint without invalidating layout cache.
+        let taskEpoch = store.taskEpoch
         let focusTarget = store.editingID ?? store.selectedID
         let focusSet = store.isFocusMode ? store.focusVisibleIDs() : nil
         let searchSet = Set(store.searchMatchIDs)
@@ -67,7 +75,8 @@ struct BrainstormCanvasView: View {
                     focusSet: focusSet,
                     searchSet: searchSet,
                     zoom: zoom,
-                    viewportSize: geo.size
+                    viewportSize: geo.size,
+                    taskEpoch: taskEpoch
                 )
             }
             .clipped()
@@ -172,11 +181,14 @@ struct BrainstormCanvasView: View {
         focusSet: Set<UUID>?,
         searchSet: Set<UUID>,
         zoom: CGFloat,
-        viewportSize: CGSize
+        viewportSize: CGSize,
+        taskEpoch: UInt64
     ) -> some View {
         // Expand document bounds while free-dragging so live edge previews aren’t clipped
         // when the node is pulled past the current content rect.
         let docSize = expandedContentSize(base: layout.contentSize, edges: edges, freeDrag: freeDrag)
+        // Keep taskEpoch in the view graph so toggles refresh chrome without re-layout.
+        let _ = taskEpoch
         let visibleRect = CanvasViewportCulling.visibleDocumentRect(
             viewportSize: viewportSize,
             panOffset: panOffset,
@@ -289,6 +301,11 @@ struct BrainstormCanvasView: View {
             // exists, and + Note / Note on hover or selection for every node.
             showNoteAction: true,
             showNoteIndicator: node.hasNote,
+            showTaskCompleteness: uiPreferences.showTaskCompleteness(
+                fileURL: store.fileURL,
+                documentID: store.documentID
+            ),
+            taskStatus: store.taskStatus(for: node.id),
             editSeed: store.editingID == node.id ? store.editingSeed : nil,
             editSelectAll: store.editingID == node.id ? store.editingSelectAll : true,
             noteFocusNamespace: noteFocusNamespace,
@@ -335,6 +352,9 @@ struct BrainstormCanvasView: View {
             },
             onOpenNote: {
                 openNote(for: node.id)
+            },
+            onToggleTaskDone: {
+                store.toggleTaskDone(id: node.id)
             }
         )
     }
@@ -1044,6 +1064,7 @@ final class LayoutResultCache {
     private var liveID: UUID?
     private var liveTitle: String?
     private var noteInclusionRawValue: String?
+    private var showTaskCompleteness = false
     private var result: LayoutResult?
 
     func layout(
@@ -1051,13 +1072,15 @@ final class LayoutResultCache {
         structureEpoch: UInt64,
         noteEpoch: UInt64,
         liveTitle: LayoutEngine.LiveTitleOverride?,
-        noteInclusion: BrainstormNoteInclusion
+        noteInclusion: BrainstormNoteInclusion,
+        showTaskCompleteness: Bool = false
     ) -> LayoutResult {
         if structureEpoch == self.structureEpoch,
            noteEpoch == self.noteEpoch,
            liveTitle?.id == liveID,
            liveTitle?.title == self.liveTitle,
            noteInclusion.rawValue == noteInclusionRawValue,
+           showTaskCompleteness == self.showTaskCompleteness,
            let result
         {
             return result
@@ -1065,13 +1088,15 @@ final class LayoutResultCache {
         let next = engine.layout(
             root: root,
             liveTitle: liveTitle,
-            noteInclusion: noteInclusion
+            noteInclusion: noteInclusion,
+            showTaskCompleteness: showTaskCompleteness
         )
         self.structureEpoch = structureEpoch
         self.noteEpoch = noteEpoch
         self.liveID = liveTitle?.id
         self.liveTitle = liveTitle?.title
         self.noteInclusionRawValue = noteInclusion.rawValue
+        self.showTaskCompleteness = showTaskCompleteness
         self.result = next
         return next
     }

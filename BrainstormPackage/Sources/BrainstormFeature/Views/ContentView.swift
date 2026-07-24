@@ -149,6 +149,14 @@ public struct ContentView: View {
     @State private var uiPreferences = BrainstormUIPreferences.shared
     @State private var searchFieldFocused = false
     @FocusState private var searchFocused: Bool
+
+    /// Per-file task chrome (not document content — only visibility).
+    private var showTaskCompleteness: Bool {
+        uiPreferences.showTaskCompleteness(
+            fileURL: store.fileURL,
+            documentID: store.documentID
+        )
+    }
     @State private var autosaveTask: Task<Void, Never>?
     /// Last bytes observed on disk for the current saved document.
     @State private var monitoredFileData: Data?
@@ -462,6 +470,7 @@ public struct ContentView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if presentationSnapshot == nil {
+            // History
             ToolbarItemGroup(placement: .navigation) {
                 Button("Undo", systemImage: "arrow.uturn.backward") {
                     performContextualUndo()
@@ -475,84 +484,131 @@ public struct ContentView: View {
                 .disabled(!isNoteWorkspaceLocked && !store.canRedo)
                 .focusable(false)
             }
+
+            // Zoom: − · percent (click = 100%) · +
             ToolbarItemGroup(placement: .primaryAction) {
-                ThemePickerMenu(themeID: store.themeID) { id in
-                    store.applyTheme(id)
-                }
-                .focusable(false)
-
-                // Search UI temporarily disabled (type-to-edit conflicts); re-enable later.
-
                 Button("Zoom Out", systemImage: "minus.magnifyingglass") {
                     store.zoomOut()
                 }
                 .focusable(false)
 
                 CanvasZoomReadout(viewport: store.viewport)
-
-                CanvasActualSizeButton(viewport: store.viewport)
+                    .focusable(false)
 
                 Button("Zoom In", systemImage: "plus.magnifyingglass") {
                     store.zoomIn()
                 }
                 .focusable(false)
+            }
 
-                Button("Focus", systemImage: uiPreferences.isFocusMode ? "circle.lefthalf.filled" : "circle") {
+            // View toggles
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button(
+                    "Focus",
+                    systemImage: uiPreferences.isFocusMode
+                        ? "circle.lefthalf.filled"
+                        : "circle"
+                ) {
                     store.toggleFocusMode()
                 }
+                .help(
+                    uiPreferences.isFocusMode
+                        ? "Show full map"
+                        : "Dim nodes outside the selected branch"
+                )
                 .focusable(false)
 
-                Button("Inspector", systemImage: "sidebar.trailing") {
+                Button("Sidebar", systemImage: "sidebar.trailing") {
                     uiPreferences.showInspector.toggle()
                 }
+                .help(
+                    uiPreferences.showInspector
+                        ? "Hide style sidebar"
+                        : "Show style sidebar"
+                )
                 .focusable(false)
+            }
 
-                Button("Present", systemImage: "play.rectangle") {
+            // Theme
+            ToolbarItem(placement: .primaryAction) {
+                ThemePickerMenu(themeID: store.themeID) { id in
+                    store.applyTheme(id)
+                }
+                .focusable(false)
+            }
+
+            // Primary map action
+            ToolbarItem(placement: .primaryAction) {
+                Button("Present", systemImage: "play.rectangle.fill") {
                     startPresentation()
                 }
+                .disabled(isNoteWorkspaceLocked)
+                .help("Start presentation from the selected node")
                 .focusable(false)
                 .accessibilityIdentifier("startPresentation")
+            }
 
-                Button("Keyboard", systemImage: "keyboard") {
-                    presentKeyboardHelp()
+            // Tasks chrome (per-file visibility) sits after Present.
+            ToolbarItem(placement: .primaryAction) {
+                Button(
+                    "Tasks",
+                    systemImage: showTaskCompleteness
+                        ? "checkmark.circle.fill"
+                        : "checkmark.circle"
+                ) {
+                    uiPreferences.toggleShowTaskCompleteness(
+                        fileURL: store.fileURL,
+                        documentID: store.documentID
+                    )
                 }
+                .help(
+                    showTaskCompleteness
+                        ? "Hide task checkboxes (progress stays in the file)"
+                        : "Show task checkboxes to mark nodes done"
+                )
                 .focusable(false)
+                .accessibilityIdentifier("toolbarTasksToggle")
+            }
 
-                Button("New Tab", systemImage: "plus.rectangle.on.rectangle") {
-                    openNewTab()
-                }
-                .focusable(false)
-
-                Button("New Window", systemImage: "macwindow.badge.plus") {
-                    openNewWindow()
-                }
-                .focusable(false)
-
-                Button("Open", systemImage: "folder") {
-                    openDocument()
-                }
-                .focusable(false)
-
-                Button("Save", systemImage: "square.and.arrow.down") {
-                    saveDocument(saveAs: false)
-                }
-                .focusable(false)
-
-                Button("Save As", systemImage: "square.and.arrow.down.on.square") {
-                    saveDocument(saveAs: true)
-                }
-                .focusable(false)
-
+            // File / export / help — overflow keeps the bar scannable
+            ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    ForEach(BrainstormExportFormat.menuCases, id: \.self) { format in
-                        Button(format.menuTitle) {
-                            exportDocument(as: format)
+                    Button("Open…", systemImage: "folder") {
+                        openDocument()
+                    }
+                    Button("Save", systemImage: "square.and.arrow.down") {
+                        saveDocument(saveAs: false)
+                    }
+                    Button("Save As…", systemImage: "square.and.arrow.down.on.square") {
+                        saveDocument(saveAs: true)
+                    }
+                    Divider()
+                    Menu {
+                        ForEach(BrainstormExportFormat.menuCases, id: \.self) { format in
+                            Button(format.menuTitle) {
+                                exportDocument(as: format)
+                            }
                         }
+                    } label: {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                    Divider()
+                    Button("New Tab", systemImage: "plus.rectangle.on.rectangle") {
+                        openNewTab()
+                    }
+                    Button("New Window", systemImage: "macwindow.badge.plus") {
+                        openNewWindow()
+                    }
+                    Divider()
+                    Button("Keyboard Shortcuts", systemImage: "keyboard") {
+                        presentKeyboardHelp()
                     }
                 } label: {
-                    Label("Export", systemImage: "square.and.arrow.up")
+                    Label("More", systemImage: "ellipsis.circle")
                 }
+                .help("File, export, and help")
                 .focusable(false)
+                .accessibilityIdentifier("toolbarMoreMenu")
             }
         }
     }
@@ -740,7 +796,6 @@ public struct ContentView: View {
 
                 if uiPreferences.showInspector {
                     NodeInspectorView(store: store)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
             .allowsHitTesting(!isNoteWorkspaceLocked)
@@ -769,7 +824,7 @@ public struct ContentView: View {
                 .zIndex(2)
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: uiPreferences.showInspector)
+        // Sidebar toggles as a layout column (no slide-over drawer animation).
         .animation(.easeInOut(duration: 0.25), value: store.themeID)
         // Nodes resolve fill/text/branch from this environment value.
         .environment(\.brainstormTheme, store.theme)
@@ -1352,37 +1407,32 @@ public struct ContentView: View {
 
 /// Small, isolated observers keep continuous viewport updates from
 /// invalidating the complete document workspace.
+///
+/// Clicking the percent resets to 100% (actual size), replacing a separate 1:1
+/// control so zoom stays a compact − / % / + cluster.
 private struct CanvasZoomReadout: View {
     @Bindable var viewport: CanvasViewportState
 
-    var body: some View {
-        Text("\(Int(viewport.zoomScale * 100))%")
-            .font(.caption.monospacedDigit())
-            .frame(minWidth: 36)
-            .foregroundStyle(.secondary)
+    private var isActualSize: Bool {
+        abs(viewport.zoomScale - 1) < 0.001
     }
-}
-
-private struct CanvasActualSizeButton: View {
-    @Bindable var viewport: CanvasViewportState
 
     var body: some View {
         Button {
             viewport.zoomReset()
         } label: {
-            Text("1:1")
+            Text("\(Int(viewport.zoomScale * 100))%")
                 .font(.caption.monospacedDigit().weight(.medium))
-                .padding(.horizontal, 4)
+                .frame(minWidth: 40)
                 .contentShape(Rectangle())
         }
-        // A regular text button gets its own macOS toolbar capsule and
-        // visually splits the ToolbarItemGroup. Keep it inside the shared
-        // zoom group while retaining a useful click target.
         .buttonStyle(.plain)
-        .accessibilityLabel("Actual Size")
+        .foregroundStyle(isActualSize ? .secondary : .primary)
+        .help(isActualSize ? "Zoom is at actual size" : "Reset zoom to 100%")
+        .accessibilityLabel("Zoom \(Int(viewport.zoomScale * 100)) percent")
+        .accessibilityHint("Resets zoom to actual size")
         .accessibilityIdentifier("zoomActualSize")
-        .disabled(abs(viewport.zoomScale - 1) < 0.001)
-        .focusable(false)
+        .disabled(isActualSize)
     }
 }
 
@@ -1779,6 +1829,7 @@ private struct ContentViewChrome: ViewModifier {
                 WindowChromeBridge(
                     documentID: documentID,
                     isDocumentEdited: store.isDirty,
+                    representedURL: store.fileURL,
                     // Pass the exact sender so inactive tab/window close
                     // never falls back to a different key window.
                     shouldClose: { window in onClose(window) },
@@ -1824,9 +1875,60 @@ private struct ContentViewChrome: ViewModifier {
                 onEditNote: onEditNote
             ))
             .navigationTitle(store.documentTitle)
+            .toolbarTitleMenu {
+                documentTitleMenu
+            }
             // App chrome always follows the macOS light/dark appearance.
             // Map palettes pin light/dark only on the canvas (see mainWorkspace).
             .modifier(ContentViewErrorAlert(store: store))
+    }
+
+    /// Click the window title for document actions (alongside the system proxy icon).
+    @ViewBuilder
+    private var documentTitleMenu: some View {
+        Button("Save", systemImage: "square.and.arrow.down") {
+            onSave(false)
+        }
+        Button("Save As…", systemImage: "square.and.arrow.down.on.square") {
+            onSave(true)
+        }
+        Divider()
+        Menu {
+            ForEach(BrainstormExportFormat.menuCases, id: \.self) { format in
+                Button(format.menuTitle) {
+                    onExport(format)
+                }
+            }
+        } label: {
+            Label("Export", systemImage: "square.and.arrow.up")
+        }
+        if let fileURL = store.fileURL {
+            Divider()
+            Button("Reveal in Finder", systemImage: "folder") {
+                NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+            }
+            Button("Copy Path", systemImage: "doc.on.clipboard") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(fileURL.path, forType: .string)
+            }
+        }
+        Divider()
+        Button("Open…", systemImage: "folder") {
+            onOpen()
+        }
+        Menu("Open Recent") {
+            let items = RecentDocuments.shared.items
+            if items.isEmpty {
+                Button("No Recent Documents") {}
+                    .disabled(true)
+            } else {
+                ForEach(items) { item in
+                    Button(item.menuTitle) {
+                        onOpenRecent(item.id)
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -2047,6 +2149,9 @@ final class WindowChromeHostView: NSView {
 struct WindowChromeBridge: NSViewRepresentable {
     let documentID: UUID
     var isDocumentEdited: Bool
+    /// On-disk document URL for the title-bar proxy icon and path menu.
+    /// `nil` while the map is untitled / never saved.
+    var representedURL: URL?
     /// Receives the exact window that should close (red button / tab).
     var shouldClose: (NSWindow) -> Bool
     var prepareForApplicationTermination:
@@ -2059,6 +2164,7 @@ struct WindowChromeBridge: NSViewRepresentable {
         Coordinator(
             documentID: documentID,
             isDocumentEdited: isDocumentEdited,
+            representedURL: representedURL,
             shouldClose: shouldClose,
             prepareForApplicationTermination:
                 prepareForApplicationTermination,
@@ -2084,6 +2190,7 @@ struct WindowChromeBridge: NSViewRepresentable {
         }
         context.coordinator.documentID = documentID
         context.coordinator.isDocumentEdited = isDocumentEdited
+        context.coordinator.representedURL = representedURL
         context.coordinator.shouldClose = shouldClose
         context.coordinator.prepareTermination =
             prepareForApplicationTermination
@@ -2110,6 +2217,7 @@ struct WindowChromeBridge: NSViewRepresentable {
     {
         var documentID: UUID
         var isDocumentEdited: Bool
+        var representedURL: URL?
         var shouldClose: (NSWindow) -> Bool
         var prepareTermination:
             () -> ApplicationTerminationPreparation
@@ -2124,6 +2232,7 @@ struct WindowChromeBridge: NSViewRepresentable {
         init(
             documentID: UUID,
             isDocumentEdited: Bool,
+            representedURL: URL? = nil,
             shouldClose: @escaping (NSWindow) -> Bool,
             prepareForApplicationTermination:
                 @escaping () -> ApplicationTerminationPreparation = {
@@ -2136,6 +2245,7 @@ struct WindowChromeBridge: NSViewRepresentable {
         ) {
             self.documentID = documentID
             self.isDocumentEdited = isDocumentEdited
+            self.representedURL = representedURL
             self.shouldClose = shouldClose
             self.prepareTermination =
                 prepareForApplicationTermination
@@ -2151,12 +2261,24 @@ struct WindowChromeBridge: NSViewRepresentable {
             fatalError("init(coder:) has not been implemented")
         }
 
+        /// Dirty dot + proxy icon for the system title path menu.
+        func applyDocumentChrome(to window: NSWindow) {
+            window.isDocumentEdited = isDocumentEdited
+            // Only touch representedURL when it actually changes so AppKit does
+            // not thrash the proxy icon during unrelated chrome updates.
+            let next = representedURL?.standardizedFileURL
+            let current = window.representedURL?.standardizedFileURL
+            if current != next {
+                window.representedURL = next
+            }
+        }
+
         func attach(to window: NSWindow?) {
             guard let window else {
                 detach()
                 return
             }
-            window.isDocumentEdited = isDocumentEdited
+            applyDocumentChrome(to: window)
             DocumentWindowTabbing.configure(window, documentID: documentID)
             if self.window === window, (window.delegate as AnyObject?) === self {
                 installInResponderChain(of: window)
@@ -2367,7 +2489,43 @@ public extension Notification.Name {
 
 // MARK: - Chrome subviews
 
-/// Menu of Zed / VS Code–style editor palettes.
+/// Shared theme menu rows for the toolbar palette and style-sidebar Map theme control.
+///
+/// **Manage Themes…** is intentionally first so long imported catalogs never hide it
+/// under the fold (NSMenu truncates long lists with scrolling).
+@MainActor
+enum ThemeSelectionMenu {
+    @ViewBuilder
+    static func items(
+        themeID: String,
+        onSelect: @escaping (String) -> Void,
+        onManageThemes: @escaping () -> Void
+    ) -> some View {
+        Button("Manage Themes…") {
+            onManageThemes()
+        }
+        Divider()
+        ForEach(AppTheme.all) { theme in
+            Button {
+                onSelect(theme.id)
+            } label: {
+                // Single-line labels are reliable in AppKit menus; multi-line
+                // HStacks often collapse and can drop trailing non-theme rows.
+                HStack {
+                    if theme.id == themeID {
+                        Image(systemName: "checkmark")
+                            .frame(width: 12)
+                    } else {
+                        Color.clear.frame(width: 12)
+                    }
+                    Text("\(theme.name) — \(theme.subtitle)")
+                }
+            }
+        }
+    }
+}
+
+/// Toolbar control: palette menu of Zed / VS Code–style editor themes.
 struct ThemePickerMenu: View {
     let themeID: String
     var onSelect: (String) -> Void
@@ -2377,29 +2535,13 @@ struct ThemePickerMenu: View {
 
     var body: some View {
         Menu {
-            ForEach(AppTheme.all) { theme in
-                Button {
-                    onSelect(theme.id)
-                } label: {
-                    HStack {
-                        ThemeSwatchStrip(theme: theme)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(theme.name)
-                            Text(theme.subtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 8)
-                        if theme.id == themeID {
-                            Image(systemName: "checkmark")
-                        }
-                    }
+            ThemeSelectionMenu.items(
+                themeID: themeID,
+                onSelect: onSelect,
+                onManageThemes: {
+                    openWindow(id: BrainstormWindowID.themeManager)
                 }
-            }
-            Divider()
-            Button("Manage Themes…") {
-                openWindow(id: BrainstormWindowID.themeManager)
-            }
+            )
         } label: {
             Label {
                 Text(current.isSystem ? "Theme" : current.name)
@@ -2408,6 +2550,8 @@ struct ThemePickerMenu: View {
             }
         }
         .menuIndicator(.hidden)
+        .help("Map theme — Manage Themes… is at the top of this menu")
+        .accessibilityIdentifier("themePickerMenu")
     }
 }
 

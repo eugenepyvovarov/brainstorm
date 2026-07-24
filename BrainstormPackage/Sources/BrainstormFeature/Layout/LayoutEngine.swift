@@ -22,6 +22,8 @@ public struct LayoutNode: Identifiable, Equatable, Sendable {
     public let hasManualPosition: Bool
     /// Edge color for links *from this node* to children (may be nil → default).
     public let branchHex: String?
+    /// Stored task-done flag (display status is derived with the live tree).
+    public let isTaskDone: Bool
 }
 
 public struct LayoutEdge: Equatable, Sendable, Identifiable {
@@ -76,6 +78,8 @@ public struct LayoutEngine: Sendable {
     public var editingCaretPad: CGFloat = 16
     /// Display box for the single media decoration (matches BrainstormNodeView.mediaFrame root).
     public var mediaSlot: CGFloat = 22
+    /// Task checkbox control width (matches BrainstormNodeView root / child sizes).
+    public var taskCheckboxSlot: CGFloat = 20
     /// Gap between media and title (matches BrainstormNodeView HStack spacing).
     public var mediaSpacing: CGFloat = 6
     /// Vertical gap between a node card and its optional note card.
@@ -101,14 +105,16 @@ public struct LayoutEngine: Sendable {
         root: BrainstormNode,
         liveTitle: LiveTitleOverride? = nil,
         noteInclusion: BrainstormNoteInclusion = .none,
-        placementPolicy: LayoutPlacementPolicy = .expandedOnly
+        placementPolicy: LayoutPlacementPolicy = .expandedOnly,
+        showTaskCompleteness: Bool = false
     ) -> LayoutResult {
         let metrics = measure(
             root,
             isRoot: true,
             liveTitle: liveTitle,
             noteInclusion: noteInclusion,
-            placementPolicy: placementPolicy
+            placementPolicy: placementPolicy,
+            showTaskCompleteness: showTaskCompleteness
         )
         var nodes: [LayoutNode] = []
         var edges: [LayoutEdge] = []
@@ -150,7 +156,8 @@ public struct LayoutEngine: Sendable {
                     note: node.note,
                     noteFrame: node.noteFrame?.offsetBy(dx: shiftX, dy: shiftY).integral,
                     hasManualPosition: node.hasManualPosition,
-                    branchHex: node.branchHex
+                    branchHex: node.branchHex,
+                    isTaskDone: node.isTaskDone
                 )
             }
             edges = edges.map { edge in
@@ -196,11 +203,18 @@ public struct LayoutEngine: Sendable {
         isRoot: Bool,
         liveTitle: LiveTitleOverride?,
         noteInclusion: BrainstormNoteInclusion,
-        placementPolicy: LayoutPlacementPolicy
+        placementPolicy: LayoutPlacementPolicy,
+        showTaskCompleteness: Bool
     ) -> SubtreeMetrics {
         let isEditing = liveTitle?.id == node.id
         let title = isEditing ? (liveTitle?.title ?? node.title) : node.title
-        let nodeSize = sizeForNode(node, title: title, isRoot: isRoot, isEditing: isEditing)
+        let nodeSize = sizeForNode(
+            node,
+            title: title,
+            isRoot: isRoot,
+            isEditing: isEditing,
+            showTaskCompleteness: showTaskCompleteness
+        )
         let includedNote = node.note.flatMap {
             noteInclusion.includes($0) ? $0 : nil
         }
@@ -236,7 +250,8 @@ public struct LayoutEngine: Sendable {
                 isRoot: false,
                 liveTitle: liveTitle,
                 noteInclusion: noteInclusion,
-                placementPolicy: placementPolicy
+                placementPolicy: placementPolicy,
+                showTaskCompleteness: showTaskCompleteness
             )
         }
         let spacing = CGFloat(max(0, childMetrics.count - 1)) * siblingSpacing
@@ -253,11 +268,12 @@ public struct LayoutEngine: Sendable {
         _ node: BrainstormNode,
         title: String,
         isRoot: Bool,
-        isEditing: Bool
+        isEditing: Bool,
+        showTaskCompleteness: Bool
     ) -> CGSize {
-        // Title gets its full measured width; media adds horizontal room so the
-        // icon never steals title space (which caused "Brainstorm…" truncation).
-        // Height and outer padding stay the same with or without media.
+        // Title gets its full measured width; media and task checkbox add
+        // horizontal room so they never steal title space (which caused "…").
+        // Height and outer padding stay the same with or without chrome.
         let titleSize = sizeForTitle(
             title,
             isRoot: isRoot,
@@ -265,10 +281,14 @@ public struct LayoutEngine: Sendable {
             isEditing: isEditing
         )
         let mediaW = mediaExtraWidth(for: node.media, isRoot: isRoot)
+        let taskW = taskCheckboxExtraWidth(
+            isRoot: isRoot,
+            showTaskCompleteness: showTaskCompleteness
+        )
         let vPad = isRoot ? rootVerticalPadding : verticalPadding
         let caret = isEditing ? editingCaretPad : 0
 
-        var width = titleSize.width + mediaW + horizontalPadding * 2 + caret
+        var width = titleSize.width + mediaW + taskW + horizontalPadding * 2 + caret
         var height = titleSize.height + vPad * 2
 
         // Diamond needs a bit more room so text fits inside.
@@ -285,6 +305,16 @@ public struct LayoutEngine: Sendable {
     private func mediaExtraWidth(for media: NodeMedia, isRoot: Bool) -> CGFloat {
         guard media.activeKind != nil else { return 0 }
         let frame = isRoot ? mediaSlot : max(16, mediaSlot - 2)
+        return frame + mediaSpacing
+    }
+
+    /// Matches BrainstormNodeView task checkbox (18/20) + leading spacing.
+    private func taskCheckboxExtraWidth(
+        isRoot: Bool,
+        showTaskCompleteness: Bool
+    ) -> CGFloat {
+        guard showTaskCompleteness else { return 0 }
+        let frame = isRoot ? taskCheckboxSlot : max(16, taskCheckboxSlot - 2)
         return frame + mediaSpacing
     }
 
@@ -431,7 +461,8 @@ public struct LayoutEngine: Sendable {
                 note: includedNote,
                 noteFrame: noteFrame,
                 hasManualPosition: node.hasManualPosition,
-                branchHex: node.style.branchHex
+                branchHex: node.style.branchHex,
+                isTaskDone: node.isTaskDone
             )
         )
 

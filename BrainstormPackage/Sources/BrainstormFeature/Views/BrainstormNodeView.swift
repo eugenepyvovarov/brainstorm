@@ -23,6 +23,10 @@ struct BrainstormNodeView: View {
     let showNoteAction: Bool
     /// Whether a compact note-presence marker is shown on the map.
     let showNoteIndicator: Bool
+    /// Whether task checkboxes are visible (progress still lives in the document when off).
+    let showTaskCompleteness: Bool
+    /// Derived roll-up for this node (unchecked / partial / checked).
+    let taskStatus: NodeTaskStatus
     let editSeed: String?
     /// When beginning an edit without a seed: select all (replace) vs caret at end.
     let editSelectAll: Bool
@@ -49,6 +53,8 @@ struct BrainstormNodeView: View {
     let onResetPosition: () -> Void
     /// Opens the node-centered note composition surface.
     let onOpenNote: () -> Void
+    /// Toggle task-done for this node (cascades to descendants).
+    let onToggleTaskDone: () -> Void
 
     // MARK: - State
     @State private var draft: String = ""
@@ -279,10 +285,54 @@ struct BrainstormNodeView: View {
     private var cardInterior: some View {
         // Same outer padding whether or not media is present; layout reserves
         // horizontal room for media so the title is not ellipsized.
-        HStack(alignment: .center, spacing: layoutNode.media.isEmpty ? 0 : 6) {
+        HStack(alignment: .center, spacing: layoutNode.media.isEmpty && !showTaskCompleteness ? 0 : 6) {
+            if showTaskCompleteness {
+                taskCheckbox
+            }
             mediaView
             titleContent
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var taskCheckbox: some View {
+        Button {
+            onToggleTaskDone()
+        } label: {
+            Image(systemName: taskCheckboxSymbol)
+                .font(.system(size: isRoot ? 15 : 14, weight: .semibold))
+                .foregroundStyle(taskCheckboxColor)
+                .frame(width: isRoot ? 20 : 18, height: isRoot ? 20 : 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(taskCheckboxHelp)
+        .accessibilityLabel(taskCheckboxHelp)
+        .accessibilityIdentifier("nodeTaskCheckbox-\(layoutNode.id.uuidString)")
+    }
+
+    private var taskCheckboxSymbol: String {
+        switch taskStatus {
+        case .unchecked: return "circle"
+        case .partial: return "circle.lefthalf.filled"
+        case .checked: return "checkmark.circle.fill"
+        }
+    }
+
+    private var taskCheckboxColor: Color {
+        switch taskStatus {
+        case .unchecked:
+            return textColor.opacity(0.45)
+        case .partial, .checked:
+            return Color.accentColor
+        }
+    }
+
+    private var taskCheckboxHelp: String {
+        switch taskStatus {
+        case .unchecked: return "Mark done"
+        case .partial: return "Mark all done"
+        case .checked: return "Mark not done"
         }
     }
 
@@ -293,6 +343,9 @@ struct BrainstormNodeView: View {
                 text: $draft,
                 placeholder: placeholder,
                 font: nsTitleFont,
+                // Map palette — never NSColor.labelColor (that tracks macOS light/dark).
+                textColor: NSColor(textColor),
+                placeholderColor: NSColor(textColor).withAlphaComponent(0.45),
                 focusNonce: focusNonce,
                 selectAllOnFocus: selectAllOnFocus,
                 onTextChange: { newValue in
@@ -313,7 +366,8 @@ struct BrainstormNodeView: View {
             Text(displayTitle)
                 .font(titleFont)
                 .fontWeight(layoutNode.style.isBold ? .semibold : (isRoot ? .semibold : .medium))
-                .foregroundStyle(textColor)
+                .foregroundStyle(displayTextColor)
+                .strikethrough(isTaskTitleStruck, color: displayTextColor.opacity(0.75))
                 .lineLimit(LayoutEngine.displayLineLimit)
                 .truncationMode(.tail)
                 .multilineTextAlignment(.leading)
@@ -322,6 +376,15 @@ struct BrainstormNodeView: View {
                 .allowsTightening(false)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Cross out fully done titles only while task chrome is visible.
+    private var isTaskTitleStruck: Bool {
+        showTaskCompleteness && taskStatus == .checked
+    }
+
+    private var displayTextColor: Color {
+        isTaskTitleStruck ? textColor.opacity(0.55) : textColor
     }
 
     /// Display box for the single media decoration (matches LayoutEngine.mediaSlot).
@@ -707,6 +770,9 @@ private struct NodeTitleField: NSViewRepresentable {
     @Binding var text: String
     var placeholder: String
     var font: NSFont
+    /// Mind-map theme text color (not `NSColor.labelColor` / system appearance).
+    var textColor: NSColor
+    var placeholderColor: NSColor
     var focusNonce: Int
     /// `true` = select all on focus (replace mode). `false` = caret at end (type-to-edit seed).
     var selectAllOnFocus: Bool
@@ -717,18 +783,31 @@ private struct NodeTitleField: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    /// Keep font + typing attributes locked so typed text never drifts weight/size.
-    private func applyFont(_ font: NSFont, to view: NodeTitleTextView) {
-        let fontChanged = view.font != font
+    /// Keep font + theme text color locked so typed text never drifts to system label color.
+    private func applyTypography(to view: NodeTitleTextView) {
+        let previousFont = view.font
+        let previousColor = view.typingAttributes[.foregroundColor] as? NSColor
+        let fontChanged = previousFont != font
+        let colorChanged = previousColor.map { !$0.isEqual(textColor) } ?? true
+
         view.font = font
+        view.textColor = textColor
+        view.insertionPointColor = textColor
+        view.placeholderColor = placeholderColor
         view.typingAttributes = [
             .font: font,
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: textColor,
         ]
-        // Only rewrite storage when the face actually changes — not on every keystroke.
-        if fontChanged, let storage = view.textStorage, storage.length > 0 {
+        // Rewrite storage when face or theme text color changes — not on every keystroke.
+        if (fontChanged || colorChanged),
+           let storage = view.textStorage,
+           storage.length > 0
+        {
             storage.addAttributes(
-                [.font: font],
+                [
+                    .font: font,
+                    .foregroundColor: textColor,
+                ],
                 range: NSRange(location: 0, length: storage.length)
             )
         }
@@ -746,8 +825,10 @@ private struct NodeTitleField: NSViewRepresentable {
         view.isHorizontallyResizable = false
         view.textContainerInset = .zero
         view.focusRingType = .none
-        applyFont(font, to: view)
+        applyTypography(to: view)
         view.string = text
+        // Re-apply after `string` assignment so AppKit does not keep default label color.
+        applyTypography(to: view)
         view.delegate = context.coordinator
         view.textContainer?.lineFragmentPadding = 0
         view.textContainer?.widthTracksTextView = true
@@ -762,7 +843,6 @@ private struct NodeTitleField: NSViewRepresentable {
         view.isAutomaticQuoteSubstitutionEnabled = false
         view.isAutomaticDashSubstitutionEnabled = false
         view.isAutomaticTextReplacementEnabled = false
-        view.insertionPointColor = NSColor.controlAccentColor
         context.coordinator.textView = view
         return view
     }
@@ -770,7 +850,6 @@ private struct NodeTitleField: NSViewRepresentable {
     func updateNSView(_ view: NodeTitleTextView, context: Context) {
         context.coordinator.parent = self
         context.coordinator.textView = view
-        applyFont(font, to: view)
         view.placeholderString = placeholder
         view.textContainer?.maximumNumberOfLines = LayoutEngine.displayLineLimit
         view.textContainer?.lineBreakMode = .byWordWrapping
@@ -782,6 +861,7 @@ private struct NodeTitleField: NSViewRepresentable {
                 view.string = text
             }
         }
+        applyTypography(to: view)
         if focusing {
             context.coordinator.lastFocusNonce = focusNonce
             let selectAll = selectAllOnFocus
@@ -790,6 +870,7 @@ private struct NodeTitleField: NSViewRepresentable {
                 if view.string != self.text {
                     view.string = self.text
                 }
+                self.applyTypography(to: view)
                 window.makeFirstResponder(view)
                 if selectAll {
                     view.selectAll(nil)
@@ -821,6 +902,20 @@ private struct NodeTitleField: NSViewRepresentable {
             if view.string != normalized {
                 let selected = view.selectedRange()
                 view.string = normalized
+                // `string` assignment can drop theme foreground; re-pin typing attrs.
+                view.typingAttributes = [
+                    .font: parent.font,
+                    .foregroundColor: parent.textColor,
+                ]
+                if let storage = view.textStorage, storage.length > 0 {
+                    storage.addAttributes(
+                        [
+                            .font: parent.font,
+                            .foregroundColor: parent.textColor,
+                        ],
+                        range: NSRange(location: 0, length: storage.length)
+                    )
+                }
                 let end = (normalized as NSString).length
                 let loc = min(selected.location, end)
                 view.setSelectedRange(NSRange(location: loc, length: 0))
@@ -877,13 +972,15 @@ private struct NodeTitleField: NSViewRepresentable {
 /// `NSTextView` with a simple placeholder and multiline intrinsic height.
 private final class NodeTitleTextView: NSTextView {
     var placeholderString: String = ""
+    /// Theme-derived muted color for the empty-title placeholder.
+    var placeholderColor: NSColor = .secondaryLabelColor
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard string.isEmpty, !placeholderString.isEmpty else { return }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font ?? NSFont.systemFont(ofSize: 14),
-            .foregroundColor: NSColor.secondaryLabelColor,
+            .foregroundColor: placeholderColor,
         ]
         let rect = bounds.insetBy(dx: 0, dy: 0)
         (placeholderString as NSString).draw(in: rect, withAttributes: attrs)

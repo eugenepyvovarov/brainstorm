@@ -535,6 +535,8 @@ private struct BrainstormExportSurface: View {
                     hasNote: false,
                     showNoteAction: false,
                     showNoteIndicator: false,
+                    showTaskCompleteness: false,
+                    taskStatus: .unchecked,
                     editSeed: nil,
                     editSelectAll: true,
                     noteFocusNamespace: nil,
@@ -553,7 +555,8 @@ private struct BrainstormExportSurface: View {
                     onFreeDragChanged: { _, _ in },
                     onFreeDragEnded: { _, _ in },
                     onResetPosition: {},
-                    onOpenNote: {}
+                    onOpenNote: {},
+                    onToggleTaskDone: {}
                 )
                 .position(x: node.frame.midX, y: node.frame.midY)
             }

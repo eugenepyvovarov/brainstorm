@@ -173,16 +173,18 @@ struct BrainstormMarkdownBundle {
         to lines: inout [String]
     ) {
         let indentation = String(repeating: "    ", count: depth)
+        // GFM task list: fully done → [x]; partial/unchecked → [ ].
+        let checkbox = node.taskStatus == .checked ? "[x]" : "[ ]"
         let title = BrainstormTextExporter.markdownInline(
             node.title,
             multilineSeparator: "<br>"
         )
         if let notePath = notePathsByNodeID[node.id] {
             lines.append(
-                "\(indentation)- \(title) — [Note](\(notePath))"
+                "\(indentation)- \(checkbox) \(title) — [Note](\(notePath))"
             )
         } else {
-            lines.append("\(indentation)- \(title)")
+            lines.append("\(indentation)- \(checkbox) \(title)")
         }
         for child in node.children {
             appendNode(

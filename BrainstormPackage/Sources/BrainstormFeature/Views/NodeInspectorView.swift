@@ -2,25 +2,86 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Trailing inspector — style, media, and position for the selected node.
+/// Which color channel the shared swatch grid is editing.
+private enum StyleColorRole: String, CaseIterable, Identifiable {
+    case fill
+    case text
+    case border
+    case branch
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fill: return "Fill"
+        case .text: return "Text"
+        case .border: return "Border"
+        case .branch: return "Branch"
+        }
+    }
+}
+
+/// Trailing style sidebar — solid column beside the canvas (not a floating drawer).
 /// Uses an explicit ScrollView so mouse-wheel scrolling always works (canvas
 /// scroll monitor is scoped to the canvas only).
 struct NodeInspectorView: View {
     @Bindable var store: BrainstormStore
+    @State private var uiPreferences = BrainstormUIPreferences.shared
     @State private var emojiHistory = EmojiUsageStore.shared
     @State private var showEmojiPalette = false
+    @State private var colorRole: StyleColorRole = .fill
+    @Environment(\.openWindow) private var openWindow
 
     private var node: BrainstormNode? { store.selectedNode }
 
+    private var colorsExpanded: Binding<Bool> {
+        Binding(
+            get: { uiPreferences.colorsExpanded },
+            set: { uiPreferences.colorsExpanded = $0 }
+        )
+    }
+
+    private var typeExpanded: Binding<Bool> {
+        Binding(
+            get: { uiPreferences.typeExpanded },
+            set: { uiPreferences.typeExpanded = $0 }
+        )
+    }
+
+    private var mediaExpanded: Binding<Bool> {
+        Binding(
+            get: { uiPreferences.mediaExpanded },
+            set: { uiPreferences.mediaExpanded = $0 }
+        )
+    }
+
+    private var resetExpanded: Binding<Bool> {
+        Binding(
+            get: { uiPreferences.resetExpanded },
+            set: { uiPreferences.resetExpanded = $0 }
+        )
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider().opacity(0.5)
-            styleInspector
+        HStack(spacing: 0) {
+            // Explicit edge so the sidebar reads as a layout column, not an overlay.
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                Divider().opacity(0.45)
+                styleInspector
+            }
+            .frame(width: BrainstormChrome.inspectorWidth)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: BrainstormChrome.inspectorWidth)
         .frame(maxHeight: .infinity)
-        .background { inspectorBackground }
+        .background { sidebarBackground }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("styleSidebar")
     }
 
     private var styleInspector: some View {
@@ -31,17 +92,14 @@ struct NodeInspectorView: View {
                     if store.selectedIDs.count > 1 {
                         multiSelectionNote
                     }
-                    fillSection(node)
-                    textSection(node)
-                    shapeSection(node)
-                    borderSection(node)
-                    branchSection(node)
+                    colorsSection(node)
+                    typeSection(node)
                     if store.selectedIDs.count == 1 {
                         mediaSection(node)
-                        positionSection(node)
                     } else {
                         singleNodeOnlyNote
                     }
+                    resetSection()
                 } else {
                     emptyState
                         .frame(minHeight: 160)
@@ -49,7 +107,8 @@ struct NodeInspectorView: View {
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .fixedSize(horizontal: false, vertical: true)
+            // Do not use fixedSize(vertical:) here — it freezes ideal height and
+            // can prevent collapsible sections from growing after expand.
         }
     }
 
@@ -91,14 +150,10 @@ struct NodeInspectorView: View {
         .padding(.vertical, 24)
     }
 
-    @ViewBuilder
-    private var inspectorBackground: some View {
-        if #available(macOS 26.0, *) {
-            Color.clear
-                .glassEffect(.regular, in: .rect(cornerRadius: 0))
-        } else {
-            Color(nsColor: .windowBackgroundColor).opacity(0.92)
-        }
+    /// Opaque system sidebar fill — tracks light/dark without glass drawer chrome.
+    private var sidebarBackground: some View {
+        Color(nsColor: .controlBackgroundColor)
+            .ignoresSafeArea()
     }
 
     // MARK: - Sections
@@ -114,7 +169,7 @@ struct NodeInspectorView: View {
     }
 
     private var singleNodeOnlyNote: some View {
-        Text("Emoji, images, and position are available when one node is selected.")
+        Text("Emoji and images are available when one node is selected.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 4)
@@ -123,21 +178,47 @@ struct NodeInspectorView: View {
 
     private var themeSection: some View {
         InspectorSection(title: "Map theme") {
-            Picker("Theme", selection: Binding(
-                get: { store.themeID },
-                set: { store.applyTheme($0) }
-            )) {
-                ForEach(AppTheme.all) { theme in
-                    Text("\(theme.name) — \(theme.subtitle)")
-                        .tag(theme.id)
+            // Same catalog as the toolbar; Manage Themes… is first in the menu.
+            Menu {
+                ThemeSelectionMenu.items(
+                    themeID: store.themeID,
+                    onSelect: { store.applyTheme($0) },
+                    onManageThemes: {
+                        openWindow(id: BrainstormWindowID.themeManager)
+                    }
+                )
+            } label: {
+                HStack(spacing: 8) {
+                    ThemeSwatchStrip(theme: store.theme)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(store.theme.name)
+                            .foregroundStyle(.primary)
+                        Text(store.theme.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            ThemeSwatchStrip(theme: store.theme)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("styleSidebarThemeMenu")
+            .help("Manage Themes… is at the top of this menu")
 
             Text(store.theme.isSystem
                  ? "System follows macOS light/dark. Toolbar and chrome always match the system appearance."
@@ -147,26 +228,107 @@ struct NodeInspectorView: View {
         }
     }
 
-    private func fillSection(_ node: BrainstormNode) -> some View {
-        InspectorSection(title: "Fill") {
-            colorGrid(NodeColorPalette.fills(for: store.theme), selected: node.style.fillHex) { hex in
-                store.setFillColor(hex.isEmpty ? nil : hex)
+    // MARK: - Colors (shared grid + role picker)
+
+    private func colorsSection(_ node: BrainstormNode) -> some View {
+        InspectorDisclosureSection(title: "Colors", isExpanded: colorsExpanded) {
+            Picker("Color role", selection: $colorRole) {
+                ForEach(StyleColorRole.allCases) { role in
+                    Text(role.title).tag(role)
+                }
             }
-            Text(node.style.fillHex == nil
-                 ? "Using theme \(store.theme.name) fill."
-                 : "Custom fill. Choose Theme to track the map theme again.")
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .accessibilityIdentifier("styleColorRolePicker")
+
+            colorGrid(
+                palette(for: colorRole),
+                selected: selectedHex(for: colorRole, style: node.style)
+            ) { hex in
+                applyColor(hex, role: colorRole)
+            }
+            .accessibilityIdentifier("styleColorGrid")
+
+            Text(colorCaption(for: colorRole, style: node.style))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private func textSection(_ node: BrainstormNode) -> some View {
-        InspectorSection(title: "Text") {
-            colorGrid(
-                NodeColorPalette.texts(for: store.theme),
-                selected: isAutoText(node.style) ? "" : node.style.textHex
-            ) { hex in
-                store.setTextColor(hex.isEmpty ? nil : hex)
+    private func palette(for role: StyleColorRole) -> [(name: String, hex: String)] {
+        switch role {
+        case .fill:
+            return NodeColorPalette.fills(for: store.theme)
+        case .text:
+            return NodeColorPalette.texts(for: store.theme)
+        case .border, .branch:
+            return NodeColorPalette.branches(for: store.theme)
+        }
+    }
+
+    private func selectedHex(for role: StyleColorRole, style: NodeStyle) -> String? {
+        switch role {
+        case .fill:
+            return style.fillHex
+        case .text:
+            return isAutoText(style) ? "" : style.textHex
+        case .border:
+            return style.borderHex
+        case .branch:
+            return style.branchHex
+        }
+    }
+
+    private func applyColor(_ hex: String, role: StyleColorRole) {
+        let value = hex.isEmpty ? nil : hex
+        switch role {
+        case .fill:
+            store.setFillColor(value)
+        case .text:
+            store.setTextColor(value)
+        case .border:
+            store.setBorderColor(value)
+        case .branch:
+            store.setBranchColor(value)
+        }
+    }
+
+    private func colorCaption(for role: StyleColorRole, style: NodeStyle) -> String {
+        switch role {
+        case .fill:
+            return style.fillHex == nil
+                ? "Using theme \(store.theme.name) fill."
+                : "Custom fill. Choose Theme to track the map theme again."
+        case .text:
+            return isAutoText(style)
+                ? "Using theme text (or contrast from fill)."
+                : "Custom text color."
+        case .border:
+            return style.borderHex == nil
+                ? "No custom border color."
+                : "Custom border color."
+        case .branch:
+            return style.branchHex == nil
+                ? "Using theme branch color."
+                : "Custom branch. Choose Theme to track the map theme again."
+        }
+    }
+
+    // MARK: - Type (shape, weight, size, border width)
+
+    private func typeSection(_ node: BrainstormNode) -> some View {
+        InspectorDisclosureSection(title: "Type", isExpanded: typeExpanded) {
+            labeledMenu("Shape") {
+                Picker("Shape", selection: Binding(
+                    get: { node.style.shape },
+                    set: { store.setShape($0) }
+                )) {
+                    ForEach(NodeShape.allCases) { shape in
+                        Text(shape.label).tag(shape)
+                    }
+                }
             }
 
             HStack(spacing: 12) {
@@ -183,82 +345,59 @@ struct NodeInspectorView: View {
                 .toggleStyle(.checkbox)
             }
 
-            Picker("Size", selection: Binding(
-                get: { node.style.fontSize.map(Int.init) ?? 0 },
-                set: { store.setFontSize($0 == 0 ? nil : Double($0)) }
-            )) {
-                Text("Default").tag(0)
-                Text("12").tag(12)
-                Text("14").tag(14)
-                Text("16").tag(16)
-                Text("18").tag(18)
-                Text("22").tag(22)
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func shapeSection(_ node: BrainstormNode) -> some View {
-        InspectorSection(title: "Shape") {
-            // Menu avoids clipping long labels in a narrow sidebar.
-            Picker("Shape", selection: Binding(
-                get: { node.style.shape },
-                set: { store.setShape($0) }
-            )) {
-                ForEach(NodeShape.allCases) { shape in
-                    Text(shape.label).tag(shape)
+            labeledMenu("Size") {
+                Picker("Size", selection: Binding(
+                    get: { node.style.fontSize.map(Int.init) ?? 0 },
+                    set: { store.setFontSize($0 == 0 ? nil : Double($0)) }
+                )) {
+                    Text("Default").tag(0)
+                    Text("12").tag(12)
+                    Text("14").tag(14)
+                    Text("16").tag(16)
+                    Text("18").tag(18)
+                    Text("22").tag(22)
                 }
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            labeledMenu("Border width") {
+                Picker("Width", selection: Binding(
+                    get: { node.style.borderWidth.map(Int.init) ?? 0 },
+                    set: { store.setBorderWidth($0 == 0 ? nil : Double($0)) }
+                )) {
+                    Text("Default").tag(0)
+                    Text("1 pt").tag(1)
+                    Text("2 pt").tag(2)
+                    Text("3 pt").tag(3)
+                    Text("4 pt").tag(4)
+                }
+            }
         }
     }
 
-    private func branchSection(_ node: BrainstormNode) -> some View {
-        InspectorSection(title: "Branch color") {
-            colorGrid(NodeColorPalette.branches(for: store.theme), selected: node.style.branchHex) { hex in
-                store.setBranchColor(hex.isEmpty ? nil : hex)
-            }
-            Text(node.style.branchHex == nil
-                 ? "Using theme branch color."
-                 : "Custom branch. Choose Theme to track the map theme again.")
+    private func labeledMenu<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            content()
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func borderSection(_ node: BrainstormNode) -> some View {
-        InspectorSection(title: "Border") {
-            colorGrid(
-                NodeColorPalette.branches(for: store.theme),
-                selected: node.style.borderHex
-            ) { hex in
-                store.setBorderColor(hex.isEmpty ? nil : hex)
-            }
-
-            Picker("Width", selection: Binding(
-                get: { node.style.borderWidth.map(Int.init) ?? 0 },
-                set: { store.setBorderWidth($0 == 0 ? nil : Double($0)) }
-            )) {
-                Text("Default width").tag(0)
-                Text("1 pt").tag(1)
-                Text("2 pt").tag(2)
-                Text("3 pt").tag(3)
-                Text("4 pt").tag(4)
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
+    // MARK: - Media / position (collapsed by default)
 
     private func mediaSection(_ node: BrainstormNode) -> some View {
         let shortlist = emojiHistory.shortlist(documentEmojis: store.documentEmojis())
 
-        return InspectorSection(title: "Emoji & stickers") {
+        return InspectorDisclosureSection(
+            title: "Emoji & stickers",
+            isExpanded: mediaExpanded
+        ) {
             // Current selection chip
             if let emoji = node.media.emoji, !emoji.isEmpty {
                 HStack(spacing: 8) {
@@ -345,24 +484,30 @@ struct NodeInspectorView: View {
         }
     }
 
-    private func positionSection(_ node: BrainstormNode) -> some View {
-        InspectorSection(title: "Position") {
-            if node.hasManualPosition {
-                Label("Manually positioned", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Reset Position") { store.resetPosition() }
-                    .controlSize(.small)
-            } else {
-                Text("Automatic layout")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Drag a node to free-position · ⌥R resets · ⌘-drop to reparent")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+    private func resetSection() -> some View {
+        InspectorDisclosureSection(
+            title: "Reset",
+            isExpanded: resetExpanded
+        ) {
+            Text("Applies to every node on this map.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Button("Reset Positions") {
+                store.resetAllPositions()
             }
-            Button("Reset All Positions") { store.resetAllPositions() }
-                .controlSize(.small)
+            .controlSize(.regular)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help("Clear free positions and restore automatic layout for all nodes")
+            .accessibilityIdentifier("styleSidebarResetPositions")
+
+            Button("Reset Styles") {
+                store.resetAllStyles()
+            }
+            .controlSize(.regular)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help("Clear fill, text, branch, border, shape, and font overrides so every node uses the map theme")
+            .accessibilityIdentifier("styleSidebarResetStyles")
         }
     }
 
@@ -454,6 +599,64 @@ private struct InspectorSection<Content: View>: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
         )
-        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Collapsible inspector block. Full header row is the hit target (not a tiny chevron).
+private struct InspectorDisclosureSection<Content: View>: View {
+    let title: String
+    @Binding var isExpanded: Bool
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Use a real control-sized button so AppKit hit-testing in ScrollView works.
+            Button(action: toggle) {
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20, height: 20)
+                }
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.large)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(isExpanded ? "Hide \(title.lowercased())" : "Show \(title.lowercased())")
+            .accessibilityLabel(title)
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint(isExpanded ? "Collapse section" : "Expand section")
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    content
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        // Force layout invalidation when expand state flips (ScrollView + material
+        // backgrounds can otherwise keep the previous ideal height).
+        .id("\(title)-\(isExpanded)")
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.regularMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func toggle() {
+        isExpanded.toggle()
     }
 }
