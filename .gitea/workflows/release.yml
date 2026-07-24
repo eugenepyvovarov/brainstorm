@@ -6,12 +6,13 @@ name: Release Brainstorm
 permissions:
   contents: write
 
+# One job on purpose: Gitea Actions often fails to pass needs.*.outputs between
+# jobs (empty version → Homebrew step dies after a good release). Sequential
+# steps share the runner workspace and the release.json version reliably.
 jobs:
   release:
     runs-on: macos-ultramac
-    timeout-minutes: 45
-    outputs:
-      version: ${{ steps.export_version.outputs.version }}
+    timeout-minutes: 60
     env:
       BRAINSTORM_GITEA_SERVER_URL: https://git.ultramac.work
       BRAINSTORM_GITEA_REPOSITORY: lifeisgoodlabs/brainstorm-macos
@@ -22,6 +23,9 @@ jobs:
       NOTARYTOOL_PROFILE: mcp-bundler-notary
       BRAINSTORM_GITEA_TOKEN: ${{ secrets.BRAINSTORM_GITEA_TOKEN }}
       BRAINSTORM_GITHUB_TOKEN: ${{ secrets.BRAINSTORM_GITHUB_TOKEN }}
+      HOMEBREW_TAP_REPOSITORY: eugenepyvovarov/homebrew-cask
+      HOMEBREW_TAP_UPSTREAM: Homebrew/homebrew-cask
+      BRAINSTORM_HOMEBREW_TOKEN: ${{ secrets.BRAINSTORM_HOMEBREW_TOKEN }}
     steps:
       - name: Check out the release commit
         uses: actions/checkout@v4
@@ -34,45 +38,17 @@ jobs:
 
       - name: Publish the same archive to Gitea and GitHub Releases
         run: |
+          set -euo pipefail
           manifest="$(find dist -maxdepth 2 -name release.json -print -quit)"
           test -n "$manifest"
           scripts/release/publish-release.sh "$manifest"
 
-      - name: Export released version for the Homebrew job
-        id: export_version
+      - name: Sync tap and publish Homebrew Cask for this release
         run: |
           set -euo pipefail
           manifest="$(find dist -maxdepth 2 -name release.json -print -quit)"
           test -n "$manifest"
           version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$manifest")"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[1-9][0-9]*$ ]]
-          # Gitea Actions is largely Actions-compatible; write both output files.
-          if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-            echo "version=$version" >>"$GITHUB_OUTPUT"
-          fi
-          if [[ -n "${GITEA_OUTPUT:-}" ]]; then
-            echo "version=$version" >>"$GITEA_OUTPUT"
-          fi
-          printf 'Released Brainstorm %s\n' "$version"
-
-  homebrew:
-    name: Update Homebrew Cask
-    needs: release
-    runs-on: macos-ultramac
-    timeout-minutes: 20
-    env:
-      HOMEBREW_TAP_REPOSITORY: eugenepyvovarov/homebrew-cask
-      # Personal tap is a fork of Homebrew/homebrew-cask; sync main before bumping.
-      HOMEBREW_TAP_UPSTREAM: Homebrew/homebrew-cask
-      BRAINSTORM_HOMEBREW_TOKEN: ${{ secrets.BRAINSTORM_HOMEBREW_TOKEN }}
-      BRAINSTORM_GITHUB_TOKEN: ${{ secrets.BRAINSTORM_GITHUB_TOKEN }}
-    steps:
-      - name: Check out release tooling
-        uses: actions/checkout@v4
-
-      - name: Sync tap, verify GitHub release, and publish the Cask
-        run: |
-          set -euo pipefail
-          version="${{ needs.release.outputs.version }}"
-          test -n "$version"
+          printf 'Updating Homebrew Cask for Brainstorm %s\n' "$version"
           scripts/release/publish-homebrew-cask.sh "$version"
