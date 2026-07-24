@@ -760,11 +760,33 @@ public final class ThemeLibrary: @unchecked Sendable {
         return previews
     }
 
-    /// Add each original JSON file from a selected Zed extension unchanged.
+    /// Identity of one palette variant inside a Zed theme family (stable across
+    /// preview vs import paths, which mint different `AppTheme.id` values).
+    public struct ThemeVariantKey: Hashable, Sendable {
+        public let name: String
+        public let isDark: Bool
+
+        public init(name: String, isDark: Bool) {
+            self.name = name
+            self.isDark = isDark
+        }
+
+        public init(_ theme: AppTheme) {
+            self.name = theme.name
+            self.isDark = theme.isDark
+        }
+    }
+
+    /// Add original JSON file(s) from a selected Zed extension unchanged.
+    ///
+    /// - Parameter onlyVariants: when non-nil, only those variants stay visible;
+    ///   other subthemes from the imported sources are hidden (same as per-variant
+    ///   delete). Pass `nil` to keep every variant in the files.
     @discardableResult
     public func importZedThemeFiles(
         _ files: [ZedNativeThemeFile],
-        extensionID: String
+        extensionID: String,
+        onlyVariants: Set<ThemeVariantKey>? = nil
     ) throws -> [ImportedZedThemeFile] {
         let imported = try files.map { file in
             try importNativeZedTheme(
@@ -773,7 +795,32 @@ public final class ThemeLibrary: @unchecked Sendable {
             )
         }
         guard !imported.isEmpty else { throw ZedThemeImportError.extensionHasNoThemes }
-        return imported
+
+        if let onlyVariants, !onlyVariants.isEmpty {
+            // Hide non-selected variants without rewriting the source JSON.
+            let sourcePaths = Set(imported.map(\.sourceURL.path))
+            for path in sourcePaths {
+                // Snapshot names to remove, then delete against live library rows.
+                guard let snapshot = importedFiles.first(where: {
+                    $0.sourceURL.path == path
+                }) else { continue }
+                let removeIDs = snapshot.themes
+                    .filter { !onlyVariants.contains(ThemeVariantKey($0)) }
+                    .map(\.id)
+                for themeID in removeIDs {
+                    guard let live = importedFiles.first(where: {
+                        $0.sourceURL.path == path
+                    }),
+                        let theme = live.themes.first(where: { $0.id == themeID })
+                    else { continue }
+                    try delete(theme, from: live)
+                }
+            }
+        }
+
+        // Return the post-filter library rows for these sources.
+        let paths = Set(imported.map(\.sourceURL.path))
+        return importedFiles.filter { paths.contains($0.sourceURL.path) }
     }
 
     public func delete(_ file: ImportedZedThemeFile) throws {

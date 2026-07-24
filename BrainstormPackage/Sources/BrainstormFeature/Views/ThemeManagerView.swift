@@ -95,7 +95,8 @@ public struct ThemeManagerView: View {
                 nativeFileCount: previewedThemeFiles.count,
                 isLoading: loadingPreviewID != nil,
                 isImporting: isImporting,
-                onImport: importSelectedRegistryTheme
+                onImportSelectedVariant: importSelectedRegistryThemeVariant,
+                onImportAllVariants: importSelectedRegistryTheme
             )
             .frame(minWidth: 360, idealWidth: 460)
         }
@@ -179,12 +180,48 @@ public struct ThemeManagerView: View {
         }
     }
 
+    /// Import every native file / variant from the selected registry extension.
     private func importSelectedRegistryTheme() {
         guard let extensionID = selectedRegistryID, !previewedThemeFiles.isEmpty else { return }
         isImporting = true
         defer { isImporting = false }
         do {
-            _ = try ThemeLibrary.shared.importZedThemeFiles(previewedThemeFiles, extensionID: extensionID)
+            _ = try ThemeLibrary.shared.importZedThemeFiles(
+                previewedThemeFiles,
+                extensionID: extensionID
+            )
+            reloadLibrary()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Import only the variant currently selected in the preview picker.
+    private func importSelectedRegistryThemeVariant() {
+        guard let extensionID = selectedRegistryID,
+              let selected = selectedPreviewTheme,
+              !previewedThemeFiles.isEmpty
+        else { return }
+
+        // Preview files are 1:1 with `previewedThemeFiles` order.
+        guard let fileIndex = previewedFiles.firstIndex(where: {
+            $0.themes.contains(where: { $0.id == selected.id })
+        }),
+            fileIndex < previewedThemeFiles.count
+        else {
+            errorMessage = "Couldn’t match the selected variant to a theme file."
+            return
+        }
+
+        isImporting = true
+        defer { isImporting = false }
+        do {
+            let nativeFile = previewedThemeFiles[fileIndex]
+            _ = try ThemeLibrary.shared.importZedThemeFiles(
+                [nativeFile],
+                extensionID: extensionID,
+                onlyVariants: [ThemeLibrary.ThemeVariantKey(selected)]
+            )
             reloadLibrary()
         } catch {
             errorMessage = error.localizedDescription
@@ -421,10 +458,28 @@ private struct ThemePreviewPane: View {
     let nativeFileCount: Int
     let isLoading: Bool
     let isImporting: Bool
-    let onImport: () -> Void
+    let onImportSelectedVariant: () -> Void
+    let onImportAllVariants: () -> Void
 
-    private var importTitle: String {
-        nativeFileCount == 1 ? "Import Theme" : "Import \(nativeFileCount) Theme Files"
+    private var hasMultipleVariants: Bool {
+        previewThemes.count > 1
+    }
+
+    private var importSelectedTitle: String {
+        if let name = previewTheme?.name, hasMultipleVariants {
+            return "Import “\(name)”"
+        }
+        return "Import Theme"
+    }
+
+    private var importAllTitle: String {
+        if hasMultipleVariants {
+            return "Import All Variants (\(previewThemes.count))"
+        }
+        if nativeFileCount > 1 {
+            return "Import \(nativeFileCount) Theme Files"
+        }
+        return "Import Theme"
     }
 
     var body: some View {
@@ -461,16 +516,31 @@ private struct ThemePreviewPane: View {
 
                 HStack(spacing: 8) {
                     ThemeSwatchStrip(theme: previewTheme)
-                    Text("\(nativeFileCount) native Zed JSON \(nativeFileCount == 1 ? "file" : "files")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text(
+                        hasMultipleVariants
+                            ? "\(previewThemes.count) variants · \(nativeFileCount) JSON \(nativeFileCount == 1 ? "file" : "files")"
+                            : "\(nativeFileCount) native Zed JSON \(nativeFileCount == 1 ? "file" : "files")"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     Spacer()
                 }
 
-                Button(importTitle, action: onImport)
-                    .brainstormGlassButton(prominent: true)
-                    .disabled(isImporting || nativeFileCount == 0)
-                    .accessibilityIdentifier("themeManagerImportSelected")
+                VStack(alignment: .leading, spacing: 8) {
+                    Button(importSelectedTitle, action: onImportSelectedVariant)
+                        .brainstormGlassButton(prominent: true)
+                        .disabled(isImporting || nativeFileCount == 0)
+                        .help("Import only the variant selected above")
+                        .accessibilityIdentifier("themeManagerImportSelectedVariant")
+
+                    if hasMultipleVariants || nativeFileCount > 1 {
+                        Button(importAllTitle, action: onImportAllVariants)
+                            .brainstormGlassButton(prominent: false)
+                            .disabled(isImporting || nativeFileCount == 0)
+                            .help("Import every variant from this registry theme")
+                            .accessibilityIdentifier("themeManagerImportAllVariants")
+                    }
+                }
 
                 if isImporting {
                     ProgressView("Importing…")
