@@ -713,19 +713,12 @@ public struct ContentView: View {
         }
     }
 
-    // MARK: - Theme chrome
-
-    /// Fixed map palettes pin light/dark on the *canvas only*.
-    /// Window chrome (toolbar, inspector, status bar) always follows macOS appearance.
-    private var canvasPreferredScheme: ColorScheme? {
-        let theme = store.theme
-        guard !theme.isSystem else { return nil }
-        return theme.isDark ? .dark : .light
-    }
-
     // MARK: - Workspace
 
     private var mainWorkspace: some View {
+        // Do not apply preferredColorScheme for map themes: on macOS that
+        // preference leaks to the window and forces toolbar/inspector/note
+        // chrome dark. Canvas colors come from the theme palette itself.
         ZStack {
             HStack(spacing: 0) {
                 BrainstormCanvasView(
@@ -741,7 +734,6 @@ public struct ContentView: View {
                 .focused($canvasFocused)
                 .focusEffectDisabled()
                 .focusSection()
-                .preferredColorScheme(canvasPreferredScheme)
                 .onKeyPress(phases: .down) { keyPress in
                     handleKeyPress(keyPress)
                 }
@@ -2339,7 +2331,7 @@ enum BrainstormNodeShortcuts {
     Edit: Space to extend · type a letter to replace · ⌃←→ move by words · ⌃↑↓ disabled · ⌘↩ rename/done · Esc cancels
     Structure: ⌘↑↓ reorder · ⌘←→ change depth (outside title editing)
     Create: Tab child · Return sibling · ? for full list
-    Notes: turn on Notes, then use + Note on a node · ⌥⌘N always opens/closes the selected note
+    Notes: hover or select a node for + Note · markers show when a note is present · ⌥⌘N opens/closes
     Present: ⌥⌘↩ start · arrows/Space move · Home/End jump · Esc exits
     Documents: ⌘T new tab · ⌘N new window · ⌘W close
     """
@@ -2518,19 +2510,21 @@ private struct KeyboardStatusBar: View {
                 .foregroundStyle(.secondary)
         }
         .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(.primary)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background { statusBackground }
-        .overlay(alignment: .top) { Divider().opacity(0.4) }
+        .overlay(alignment: .top) {
+            Divider()
+                .opacity(0.45)
+        }
     }
 
-    @ViewBuilder
+    /// Opaque system chrome. Liquid Glass samples the map behind this bar and
+    /// would recolor it with the canvas theme.
     private var statusBackground: some View {
-        if #available(macOS 26.0, *) {
-            Color.clear.glassEffect(.regular, in: .rect(cornerRadius: 0))
-        } else {
-            Rectangle().fill(.bar)
-        }
+        Rectangle()
+            .fill(Color(nsColor: .windowBackgroundColor))
     }
 }
 
@@ -2586,7 +2580,7 @@ private struct KeyboardHelpSheet: View {
                     }
 
                     helpSection("5. Add or edit a note") {
-                        shortcutRow("Notes → + Note", "Turn on the Notes layer, then open the centered editor")
+                        shortcutRow("Notes → + Note", "Hover or select a node, then open the centered note editor")
                         shortcutRow("⌥⌘N", "Open or close the selected node’s note")
                         shortcutRow("paste a URL", "Keep links visible; YouTube plays inline when the note is viewed")
                         shortcutRow("Tab / ↩", "Still create child / sibling nodes when the note editor is closed")

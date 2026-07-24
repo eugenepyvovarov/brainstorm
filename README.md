@@ -56,10 +56,10 @@ deep branches in Safari.
 
 ## Node notes
 
-Turn on the optional **Notes** layer to see small note markers and reveal a
-**+ Note** action on hover or selection. Press ⌥⌘N to create or open the
-selected node’s note. Notes support bold, italic, ordered and unordered lists,
-links, pasted or dragged images, and YouTube links.
+Nodes with notes always show a small note marker. Hover or select any node to
+reveal **+ Note** / **Note**, or press ⌥⌘N to create or open the selected
+node’s note. Notes support bold, italic, ordered and unordered lists, links,
+pasted or dragged images, and YouTube links.
 
 ## Files and export
 

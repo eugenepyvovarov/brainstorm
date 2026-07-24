@@ -45,6 +45,31 @@ enum NodeNoteBlock: Equatable, Sendable {
     case ordered(start: Int, [[NodeNoteInlineRun]])
 }
 
+/// Ordered visual units for note preview/presentation. YouTube attachments that
+/// appear as a standalone body line are inlined in place of that link text.
+enum NodeNoteDisplaySegment: Equatable, Sendable, Identifiable {
+    case paragraph([[NodeNoteInlineRun]])
+    case unordered([[NodeNoteInlineRun]])
+    case ordered(start: Int, items: [[NodeNoteInlineRun]])
+    case youtube(NoteYouTubeAttachment)
+    case image(NoteImageAttachment)
+
+    var id: String {
+        switch self {
+        case .paragraph(let lines):
+            "p:\(lines.map { $0.map(\.text).joined() }.joined(separator: "\n"))"
+        case .unordered(let items):
+            "ul:\(items.map { $0.map(\.text).joined() }.joined(separator: "|"))"
+        case .ordered(let start, let items):
+            "ol:\(start):\(items.map { $0.map(\.text).joined() }.joined(separator: "|"))"
+        case .youtube(let youtube):
+            "yt:\(youtube.id.uuidString)"
+        case .image(let image):
+            "img:\(image.id.uuidString)"
+        }
+    }
+}
+
 /// One allow-listed parser used by native, Markdown, and HTML note renderers.
 enum NodeNoteRendering {
     /// A real HTTPS identity for native YouTube embeds. Loading a small local
@@ -149,6 +174,111 @@ enum NodeNoteRendering {
         }
     }
 
+    /// Body text plus attachments in document order. Standalone YouTube body
+    /// lines are replaced by their matching attachment so the player sits
+    /// where the link was, not after the following paragraph.
+    static func displaySegments(for note: NodeNote) -> [NodeNoteDisplaySegment] {
+        var segments: [NodeNoteDisplaySegment] = []
+        var consumedYouTubeIDs = Set<UUID>()
+        let youtubeAttachments = note.attachments.compactMap { attachment -> NoteYouTubeAttachment? in
+            guard case .youtube(let youtube) = attachment else { return nil }
+            return youtube
+        }
+
+        for block in blocks(from: note.bodyMarkdown) {
+            switch block {
+            case .paragraph(let lines):
+                appendParagraphLines(
+                    lines,
+                    youtubeAttachments: youtubeAttachments,
+                    consumedYouTubeIDs: &consumedYouTubeIDs,
+                    into: &segments
+                )
+            case .unordered(let items):
+                segments.append(.unordered(items))
+            case .ordered(let start, let items):
+                segments.append(.ordered(start: start, items: items))
+            }
+        }
+
+        for attachment in note.attachments {
+            switch attachment {
+            case .image(let image):
+                segments.append(.image(image))
+            case .youtube(let youtube):
+                guard !consumedYouTubeIDs.contains(youtube.id) else { continue }
+                segments.append(.youtube(youtube))
+                consumedYouTubeIDs.insert(youtube.id)
+            }
+        }
+        return segments
+    }
+
+    private static func appendParagraphLines(
+        _ lines: [[NodeNoteInlineRun]],
+        youtubeAttachments: [NoteYouTubeAttachment],
+        consumedYouTubeIDs: inout Set<UUID>,
+        into segments: inout [NodeNoteDisplaySegment]
+    ) {
+        var pendingLines: [[NodeNoteInlineRun]] = []
+
+        func flushPendingLines() {
+            guard !pendingLines.isEmpty else { return }
+            segments.append(.paragraph(pendingLines))
+            pendingLines = []
+        }
+
+        for line in lines {
+            if let youtube = soleYouTubeAttachment(
+                in: line,
+                available: youtubeAttachments,
+                excluding: consumedYouTubeIDs
+            ) {
+                flushPendingLines()
+                segments.append(.youtube(youtube))
+                consumedYouTubeIDs.insert(youtube.id)
+            } else {
+                pendingLines.append(line)
+            }
+        }
+        flushPendingLines()
+    }
+
+    /// True when a line is only a YouTube URL/link (optionally surrounded by
+    /// whitespace) that matches an unused YouTube attachment.
+    private static func soleYouTubeAttachment(
+        in runs: [NodeNoteInlineRun],
+        available: [NoteYouTubeAttachment],
+        excluding consumed: Set<UUID>
+    ) -> NoteYouTubeAttachment? {
+        let meaningful = runs.filter {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !meaningful.isEmpty else { return nil }
+
+        var videoIDs = Set<String>()
+        for run in meaningful {
+            let candidates = [
+                run.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                run.linkDestination?.absoluteString,
+            ].compactMap { $0 }
+            guard let parsed = candidates.lazy
+                .compactMap({ try? YouTubeReferenceParser.parse($0) })
+                .first
+            else {
+                // Non-YouTube text on this line — keep the line as body text.
+                return nil
+            }
+            videoIDs.insert(parsed.videoID)
+        }
+        guard videoIDs.count == 1, let videoID = videoIDs.first else {
+            return nil
+        }
+        return available.first {
+            !consumed.contains($0.id) && $0.videoID == videoID
+        }
+    }
+
     static func sanitizedMarkdownBody(_ value: String) -> String {
         blocks(from: value)
             .map { block in
@@ -176,7 +306,9 @@ enum NodeNoteRendering {
             .map { block in
                 switch block {
                 case .paragraph(let lines):
-                    let content = lines.map(htmlInline).joined(separator: "<br>")
+                    let content = lines
+                        .map { htmlInline($0) }
+                        .joined(separator: "<br>")
                     return "<p>\(content)</p>"
                 case .unordered(let items):
                     let content = items.map { "<li>\(htmlInline($0))</li>" }
@@ -541,6 +673,11 @@ enum NodeNoteRendering {
             return "[\(styled)](\(escapeMarkdownDestination(destination.absoluteString)))"
         }
         .joined()
+    }
+
+    /// Public HTML serialization for inline runs used by HTML note layout.
+    static func htmlInline(from runs: [NodeNoteInlineRun]) -> String {
+        htmlInline(runs)
     }
 
     private static func htmlInline(_ runs: [NodeNoteInlineRun]) -> String {

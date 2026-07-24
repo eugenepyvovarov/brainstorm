@@ -395,14 +395,24 @@ public extension AppTheme {
         color(grid, fallback: Color.primary.opacity(0.06))
     }
 
+    /// Window / inspector / modal chrome. Always tracks macOS light/dark — map
+    /// themes never recolor the app shell.
     var chromeBackgroundColor: Color {
-        // App chrome prefers semantic window color so it always tracks system appearance.
-        if isSystem {
-            return Color(nsColor: .windowBackgroundColor)
-        }
-        return color(chromeBackground, fallback: Color(nsColor: .windowBackgroundColor))
+        Color(nsColor: .windowBackgroundColor)
     }
 
+    /// Primary text on app chrome surfaces (not map cards).
+    var chromeForegroundColor: Color {
+        Color.primary
+    }
+
+    /// Secondary / muted text on app chrome surfaces.
+    var chromeSecondaryTextColor: Color {
+        Color.secondary
+    }
+
+    /// Map selection / accent. Used only by canvas, presentation map chrome, and
+    /// node styling — not by app window controls.
     var selectionColor: Color {
         color(selection, fallback: Color.accentColor)
     }

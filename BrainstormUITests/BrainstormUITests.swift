@@ -14,7 +14,6 @@ final class BrainstormUITests: XCTestCase {
             "-ApplePersistenceIgnoreState", "YES",
             "-Brainstorm.ui.showInspector", "YES",
             "-Brainstorm.ui.focusMode", "NO",
-            "-Brainstorm.ui.showNotesLayer", "YES",
         ]
     }
 
@@ -538,18 +537,12 @@ final class BrainstormUITests: XCTestCase {
             "Typing should update the live node title before notes open.\n\(app.debugDescription)"
         )
 
-        let notesLayerToggle = app.buttons["notesLayerToggle"]
-        XCTAssertTrue(notesLayerToggle.waitForExistence(timeout: 3))
-        if (notesLayerToggle.value as? String) != "On" {
-            notesLayerToggle.click()
-        }
-
         let notePill = mapWindow.descendants(matching: .button)
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", "nodeNotePill-"))
             .firstMatch
         XCTAssertTrue(
             notePill.waitForExistence(timeout: 3),
-            "The selected node should reveal its transient + Note action.\n\(app.debugDescription)"
+            "The selected node should reveal its transient + Note action without a notes-layer toggle.\n\(app.debugDescription)"
         )
         // Opening the note commits any active title edit, matching the real
         // workflow and avoiding a synthetic global Command-key event.
@@ -576,20 +569,12 @@ final class BrainstormUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(
             noteIndicator.waitForExistence(timeout: 3),
-            "Notes-on should show a compact presence marker for the saved note."
+            "A compact presence marker should always show when a note is present."
         )
         XCTAssertFalse(
             app.staticTexts["A focused note"].exists,
             "The map must not render the note body as an inline preview."
         )
-
-        notesLayerToggle.click()
-        XCTAssertTrue(
-            waitUntil { !noteIndicator.exists },
-            "Turning note indicators off should leave the map text-only."
-        )
-        notesLayerToggle.click()
-        XCTAssertTrue(noteIndicator.waitForExistence(timeout: 3))
         XCTAssertFalse(
             app.buttons
                 .matching(
@@ -601,6 +586,10 @@ final class BrainstormUITests: XCTestCase {
                 .firstMatch
                 .exists,
             "The in-node marker is a passive notification, not an editor button."
+        )
+        XCTAssertFalse(
+            app.buttons["notesLayerToggle"].exists,
+            "The Notes layer workspace toggle has been removed."
         )
         XCTAssertTrue(notePill.waitForExistence(timeout: 3))
         notePill.click()

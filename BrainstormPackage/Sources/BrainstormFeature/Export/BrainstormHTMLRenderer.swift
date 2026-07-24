@@ -3936,22 +3936,61 @@ enum BrainstormHTMLRenderer {
         _ note: NodeNote,
         youtubeBehavior: HTMLYouTubeBehavior
     ) -> String {
-        let body = NodeNoteRendering.htmlBody(note.bodyMarkdown)
-        let bodyMarkup = body.isEmpty ? "" : "<div class=\"note-body\">\(body)</div>"
-        let attachments = note.attachments
-            .map {
-                noteAttachmentMarkup(
-                    $0,
-                    youtubeBehavior: youtubeBehavior
+        // Interleave body lines and YouTube players so a standalone video URL
+        // is replaced in place instead of dumping the player after later text.
+        let segments = NodeNoteRendering.displaySegments(for: note)
+        var parts: [String] = []
+        var textParts: [String] = []
+
+        func flushTextParts() {
+            guard !textParts.isEmpty else { return }
+            parts.append(
+                #"<div class="note-body">"#
+                + "\n"
+                + textParts.joined(separator: "\n")
+                + "\n</div>"
+            )
+            textParts = []
+        }
+
+        for segment in segments {
+            switch segment {
+            case .paragraph(let lines):
+                let content = lines
+                    .map { NodeNoteRendering.htmlInline(from: $0) }
+                    .joined(separator: "<br>")
+                textParts.append("<p>\(content)</p>")
+            case .unordered(let items):
+                let content = items
+                    .map { "<li>\(NodeNoteRendering.htmlInline(from: $0))</li>" }
+                    .joined()
+                textParts.append("<ul>\(content)</ul>")
+            case .ordered(let start, let items):
+                let content = items
+                    .map { "<li>\(NodeNoteRendering.htmlInline(from: $0))</li>" }
+                    .joined()
+                let startAttribute = start == 1 ? "" : " start=\"\(start)\""
+                textParts.append("<ol\(startAttribute)>\(content)</ol>")
+            case .youtube(let youtube):
+                flushTextParts()
+                parts.append(
+                    noteAttachmentMarkup(
+                        .youtube(youtube),
+                        youtubeBehavior: youtubeBehavior
+                    )
+                )
+            case .image(let image):
+                flushTextParts()
+                parts.append(
+                    noteAttachmentMarkup(
+                        .image(image),
+                        youtubeBehavior: youtubeBehavior
+                    )
                 )
             }
-            .joined(separator: "\n")
-        let attachmentMarkup = attachments.isEmpty
-            ? ""
-            : "<div class=\"note-attachments\">\n\(indent(attachments, spaces: 2))\n</div>"
-        return [bodyMarkup, attachmentMarkup]
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
+        }
+        flushTextParts()
+        return parts.filter { !$0.isEmpty }.joined(separator: "\n")
     }
 
     private static func noteAttachmentMarkup(

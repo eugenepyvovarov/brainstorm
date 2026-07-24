@@ -6,16 +6,43 @@ import SwiftUI
 /// Rich text stays local to AppKit while the user types. The editor publishes
 /// canonical Markdown after a short idle period and when it closes, keeping a
 /// continuous edit as one document undo operation without exposing Markdown.
+/// Preview mode commits the draft and renders the same safe note surface used
+/// by the map and presentation exports.
 struct NodeNoteEditorView: View {
+    private enum CompositionMode: String, CaseIterable, Identifiable {
+        case edit
+        case preview
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .edit: "Edit"
+            case .preview: "Preview"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .edit: "square.and.pencil"
+            case .preview: "eye"
+            }
+        }
+    }
+
     private struct IndexedAttachment {
         let index: Int
         let attachment: NodeNoteAttachment
     }
 
-    @Bindable var store: BrainstormStore
+    // MARK: - Inputs
 
+    @Bindable var store: BrainstormStore
     private let nodeID: UUID
 
+    // MARK: - State
+
+    @State private var compositionMode: CompositionMode = .edit
     @State private var bodyDraft = ""
     @State private var commandRequest: NodeNoteTextCommandRequest?
     @State private var expectedHistoryEpoch: UInt64?
@@ -24,14 +51,11 @@ struct NodeNoteEditorView: View {
     @State private var isBodySessionActive = false
     @State private var isBodyLocallyEmpty = true
     @State private var validationMessage: String?
-    @State private var showClearConfirmation = false
+
+    // MARK: - Derived
 
     private var note: NodeNote? {
         store.node(id: nodeID)?.note
-    }
-
-    private var hasContent: Bool {
-        note?.isEmpty == false
     }
 
     private var imageAttachments: [NoteImageAttachment] {
@@ -41,15 +65,32 @@ struct NodeNoteEditorView: View {
         } ?? []
     }
 
+    private var previewNote: NodeNote {
+        if let note, !note.isEmpty {
+            return note
+        }
+        // Fall back to the live draft when the store has not coalesced yet.
+        return NodeNote(bodyMarkdown: bodyDraft)
+    }
+
+    // MARK: - Init
+
     init(store: BrainstormStore, nodeID: UUID) {
         self.store = store
         self.nodeID = nodeID
     }
 
+    // MARK: - Body
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            formattingToolbar
-            richTextEditor
+            editorChrome
+
+            if compositionMode == .edit {
+                richTextEditor
+            } else {
+                previewSurface
+            }
 
             if let validationMessage {
                 validationBanner(validationMessage)
@@ -58,6 +99,9 @@ struct NodeNoteEditorView: View {
         .padding(16)
         .onAppear(perform: beginBodyEditing)
         .onDisappear(perform: commitBodyEditing)
+        .onChange(of: compositionMode) { _, mode in
+            handleCompositionModeChange(mode)
+        }
         .onChange(of: store.noteEpoch) { _, _ in
             synchronizeBodyFromStoreIfNeeded()
         }
@@ -69,17 +113,58 @@ struct NodeNoteEditorView: View {
             }
             expectedHistoryEpoch = newEpoch
         }
-        .confirmationDialog(
-            "Clear this note?",
-            isPresented: $showClearConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Clear Note", role: .destructive, action: clearNote)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The note text and all of its images and videos will be removed.")
-        }
         .accessibilityIdentifier("nodeNoteCompositionSurface")
+    }
+
+    // MARK: - View builders
+
+    private var editorChrome: some View {
+        HStack(spacing: 10) {
+            if compositionMode == .edit {
+                formattingControls
+
+                Text("Paste links or images directly")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text("Preview")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            compositionModeToggle
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Note toolbar")
+    }
+
+    /// Segmented Edit/Preview control on the trailing edge of the chrome row.
+    private var compositionModeToggle: some View {
+        Picker("Note mode", selection: compositionModeBinding) {
+            ForEach(CompositionMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 148)
+        .accessibilityLabel("Note mode")
+        .accessibilityValue(compositionMode.title)
+        .accessibilityIdentifier("nodeNoteModePicker")
+    }
+
+    private var compositionModeBinding: Binding<CompositionMode> {
+        Binding(
+            get: { compositionMode },
+            set: { newValue in
+                guard newValue != compositionMode else { return }
+                withAnimation(.easeOut(duration: 0.16)) {
+                    compositionMode = newValue
+                }
+            }
+        )
     }
 
     private func validationBanner(_ message: String) -> some View {
@@ -158,68 +243,87 @@ struct NodeNoteEditorView: View {
         .layoutPriority(1)
     }
 
-    private var formattingToolbar: some View {
-        HStack(spacing: 10) {
-            BrainstormGlassGroup(spacing: 4) {
-                HStack(spacing: 4) {
-                    formattingButton(
-                        label: "Bold",
-                        shortcut: "⌘B",
-                        systemImage: "bold",
-                        identifier: "noteFormatBold",
-                        command: .bold
+    private var previewSurface: some View {
+        ScrollView {
+            Group {
+                if previewNote.isEmpty {
+                    ContentUnavailableView(
+                        "Nothing to preview",
+                        systemImage: "eye.slash",
+                        description: Text("Switch to Edit and write a note first.")
                     )
-                    formattingButton(
-                        label: "Italic",
-                        shortcut: "⌘I",
-                        systemImage: "italic",
-                        identifier: "noteFormatItalic",
-                        command: .italic
-                    )
-
-                    Divider()
-                        .frame(height: 18)
-
-                    formattingButton(
-                        label: "Bulleted list",
-                        shortcut: "⇧⌘8",
-                        systemImage: "list.bullet",
-                        identifier: "noteFormatUnorderedList",
-                        command: .unorderedList
-                    )
-                    formattingButton(
-                        label: "Numbered list",
-                        shortcut: "⇧⌘7",
-                        systemImage: "list.number",
-                        identifier: "noteFormatOrderedList",
-                        command: .orderedList
-                    )
+                    .frame(maxWidth: .infinity, minHeight: 220)
+                    .padding(.vertical, 24)
+                } else {
+                    NodeNoteContentView(note: previewNote, mode: .preview)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            .padding(4)
+        }
+        .frame(minHeight: 220, idealHeight: 320, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor).opacity(0.55))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.11), lineWidth: 1)
+        )
+        .layoutPriority(1)
+        .accessibilityIdentifier("nodeNotePreviewSurface")
+    }
 
-            Text("Paste links or images directly")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+    private var formattingControls: some View {
+        BrainstormGlassGroup(spacing: 4) {
+            HStack(spacing: 4) {
+                formattingButton(
+                    label: "Bold",
+                    shortcut: "⌘B",
+                    systemImage: "bold",
+                    identifier: "noteFormatBold",
+                    command: .bold
+                )
+                formattingButton(
+                    label: "Italic",
+                    shortcut: "⌘I",
+                    systemImage: "italic",
+                    identifier: "noteFormatItalic",
+                    command: .italic
+                )
 
-            Spacer(minLength: 0)
+                Divider()
+                    .frame(height: 18)
 
-            if hasContent {
-                Button {
-                    showClearConfirmation = true
-                } label: {
-                    Image(systemName: "trash")
-                        .frame(width: 28, height: 24)
-                }
-                .buttonStyle(.plain)
-                .brainstormGlassCapsule(interactive: true)
-                .contentShape(Capsule(style: .continuous))
-                .help("Clear note")
-                .accessibilityLabel("Clear note")
-                .accessibilityIdentifier("clearNodeNote")
+                formattingButton(
+                    label: "Bulleted list",
+                    shortcut: "⇧⌘8",
+                    systemImage: "list.bullet",
+                    identifier: "noteFormatUnorderedList",
+                    command: .unorderedList
+                )
+                formattingButton(
+                    label: "Numbered list",
+                    shortcut: "⇧⌘7",
+                    systemImage: "list.number",
+                    identifier: "noteFormatOrderedList",
+                    command: .orderedList
+                )
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Note formatting")
+    }
+
+    // MARK: - Mode transitions
+
+    private func handleCompositionModeChange(_ mode: CompositionMode) {
+        switch mode {
+        case .preview:
+            commitBodyEditing()
+        case .edit:
+            beginBodyEditing()
+        }
     }
 
     private func formattingButton(
@@ -230,13 +334,14 @@ struct NodeNoteEditorView: View {
         command: NodeNoteTextCommand
     ) -> some View {
         let state = formattingState.state(for: command)
+        // Formatting chrome uses the system accent, not the map theme.
         let tint: Color? = switch state {
         case .off:
             nil
         case .on:
-            store.theme.selectionColor.opacity(0.82)
+            Color.accentColor.opacity(0.82)
         case .mixed:
-            store.theme.selectionColor.opacity(0.38)
+            Color.accentColor.opacity(0.38)
         }
 
         return Button {
@@ -248,7 +353,7 @@ struct NodeNoteEditorView: View {
                 if state == .mixed {
                     Image(systemName: "minus.circle.fill")
                         .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(store.theme.selectionColor)
+                        .foregroundStyle(Color.accentColor)
                         .offset(x: 2, y: 2)
                 }
             }
@@ -555,17 +660,6 @@ struct NodeNoteEditorView: View {
         } catch {
             validationMessage = error.localizedDescription
         }
-    }
-
-    private func clearNote() {
-        commitBodyEditing()
-        if store.clearNote(for: nodeID) {
-            textUndoBoundaryID = UUID()
-        }
-        bodyDraft = ""
-        isBodyLocallyEmpty = true
-        validationMessage = nil
-        beginBodyEditing()
     }
 
     private static func youtubeIdentity(

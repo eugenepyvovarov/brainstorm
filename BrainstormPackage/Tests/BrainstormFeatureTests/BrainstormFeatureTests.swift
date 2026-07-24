@@ -338,16 +338,13 @@ struct BrainstormStoreTests {
         let preferences = BrainstormUIPreferences(defaults: defaults)
         #expect(preferences.showInspector)
         #expect(!preferences.isFocusMode)
-        #expect(!preferences.showNotesLayer)
 
         preferences.showInspector = false
         preferences.isFocusMode = true
-        preferences.showNotesLayer = true
 
         let restored = BrainstormUIPreferences(defaults: defaults)
         #expect(!restored.showInspector)
         #expect(restored.isFocusMode)
-        #expect(restored.showNotesLayer)
 
         let store = BrainstormStore(startEditing: false, uiPreferences: restored)
         #expect(store.isFocusMode)

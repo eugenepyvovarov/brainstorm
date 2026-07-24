@@ -6,6 +6,47 @@ import Testing
 @Suite("HTML and note export regressions")
 @MainActor
 struct HTMLExportRegressionTests {
+    @Test func noteDisplaySegmentsInlineYouTubeWhereTheLinkAppears() throws {
+        let videoID = "cxwQG78cM78"
+        let youtube = NoteYouTubeAttachment(videoID: videoID)
+        let note = NodeNote(
+            bodyMarkdown: """
+            Intro paragraph about GPUs.
+
+            https://www.youtube.com/watch?v=\(videoID)
+
+            Nice video caption after the link.
+            """,
+            attachments: [.youtube(youtube)]
+        )
+        let segments = NodeNoteRendering.displaySegments(for: note)
+        #expect(segments.count == 3)
+        guard case .paragraph(let before) = segments[0] else {
+            Issue.record("Expected leading paragraph")
+            return
+        }
+        #expect(before.flatMap { $0.map(\.text) }.joined().contains("GPUs"))
+        guard case .youtube(let embedded) = segments[1] else {
+            Issue.record("Expected YouTube segment in place of the link line")
+            return
+        }
+        #expect(embedded.videoID == videoID)
+        guard case .paragraph(let after) = segments[2] else {
+            Issue.record("Expected trailing paragraph after the player")
+            return
+        }
+        #expect(after.flatMap { $0.map(\.text) }.joined().contains("Nice video"))
+        #expect(
+            !segments.contains {
+                if case .paragraph(let lines) = $0 {
+                    return lines.flatMap { $0.map(\.text) }.joined()
+                        .contains(videoID)
+                }
+                return false
+            }
+        )
+    }
+
     @Test func htmlExportBaseNameUsesUnderscoresAndStripsSpecialCharacters() {
         #expect(
             BrainstormExporter.sanitizedExportBaseName("My Cool Map!")

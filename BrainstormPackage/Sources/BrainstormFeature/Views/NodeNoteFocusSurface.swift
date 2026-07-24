@@ -7,6 +7,7 @@ import SwiftUI
 /// rest of the map is dimmed and interaction-locked by `ContentView`.
 struct NodeNoteFocusSurface: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     @Bindable var store: BrainstormStore
 
@@ -53,12 +54,18 @@ struct NodeNoteFocusSurface: View {
                         .background(Color(nsColor: .windowBackgroundColor).opacity(0.18))
                 }
                 .frame(width: panelSize.width, height: panelSize.height)
+                // Note workspace is app chrome: system materials only — never
+                // tinted by the map theme palette.
                 .brainstormGlassCard(
                     cornerRadius: 24,
                     interactive: false,
-                    tint: store.theme.selectionColor.opacity(0.22)
+                    tint: nil
                 )
-                .shadow(color: .black.opacity(0.24), radius: 36, y: 18)
+                .shadow(
+                    color: Color.black.opacity(colorScheme == .dark ? 0.45 : 0.18),
+                    radius: 36,
+                    y: 18
+                )
                 .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
                 .transition(.opacity)
                 .accessibilityElement(children: .contain)
@@ -79,7 +86,7 @@ struct NodeNoteFocusSurface: View {
             Label("Node note", systemImage: "note.text")
                 .font(.headline)
 
-            Text("Write naturally; paste links or images")
+            Text("Edit or preview · paste links or images")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

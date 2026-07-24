@@ -106,16 +106,16 @@ reappearing on the next launch.
 
 ## App note workflow
 
-In the macOS app, notes are not edited in the inspector. Turn on the default-off Notes layer, then
-hover or select a node to reveal its transient **+ Note**/**Note** action. The note context-menu
-command and ⌥⌘N remain available with the visual layer off. The node lifts into a centered native
-composer while the map is dimmed and locked. The production composer uses Brainstorm's
-Apple-native AppKit/TextKit attributed surface. Its visible storage contains rich text rather than
-Markdown source, so caret movement and image selection cannot reveal syntax markers. Brainstorm
-converts attributed content to Markdown only for `.bs` persistence and enables only paragraphs, line breaks,
-bold, italic, ordered/unordered lists, and safe HTTP(S) links; unsupported syntax remains literal.
-No headings, code, tables, tasks, wiki links, or LaTeX are enabled. ⌘B/⌘I apply
-emphasis and ⇧⌘8/⇧⌘7 apply bulleted or numbered lists. A YouTube URL anywhere in the note,
+In the macOS app, notes are not edited in the inspector. Hover or select a node to reveal its
+transient **+ Note**/**Note** action; the note context-menu command and ⌥⌘N always open the selected
+node’s note. Every non-empty note also shows a compact presence marker automatically. The node lifts
+into a centered native composer while the map is dimmed and locked. The production composer uses
+Brainstorm's Apple-native AppKit/TextKit attributed surface. Its visible storage contains rich text
+rather than Markdown source, so caret movement and image selection cannot reveal syntax markers.
+Brainstorm converts attributed content to Markdown only for `.bs` persistence and enables only
+paragraphs, line breaks, bold, italic, ordered/unordered lists, and safe HTTP(S) links; unsupported
+syntax remains literal. No headings, code, tables, tasks, wiki links, or LaTeX are enabled. ⌘B/⌘I
+apply emphasis and ⇧⌘8/⇧⌘7 apply bulleted or numbered lists. A YouTube URL anywhere in the note,
 including a labeled Markdown link, remains clickable in the editor and also becomes a typed video
 attachment. An ordinary URL remains a clickable link. Pasted or dropped images become validated
 embedded PNG blocks, bounded to 320×220 points, and render inside the editing surface. Finder
@@ -125,9 +125,7 @@ typing remains available in the text surface. The WYSIWYG composer shows neither
 Markdown source; there are no Image/YouTube buttons, players, descriptions, or
 media-configuration forms in the composer. Choose **Done**, press
 Escape, or press ⌥⌘N again to return to the map. Outside this composer, Tab and Return retain their
-normal child/sibling creation behavior. The Notes workspace control affects only the transient
-visual action and compact presence markers, starts off for a fresh installation, and never changes
-or dirties the `.bs` file. A
+normal child/sibling creation behavior. A
 marker is a very small, low-emphasis,
 non-interactive SF Symbol `note.text` inside the node’s top-right corner. It uses an active-theme
 tint with no circle or button chrome and never becomes an inline note preview.
@@ -364,7 +362,7 @@ link; serving the same file unchanged activates the embedded player.
 - Use the toolbar’s **Theme** menu → **Manage Themes…** to browse the compact native Zed Theme Registry inside Brainstorm. The catalog is cached on disk for fast launches and stale offline fallback; a selected extension archive is cached by extension version. After choosing a registry result, Up/Down selects the previous or next result. Brainstorm reads only safe `themes/*.json` files, including native Zed JSON5 comments and trailing commas, and renders a real one-root, two-child map from the selected palette. Import retains every selected source file unchanged in Application Support/Brainstorm/Zed Themes; manual import accepts the same format. An imported source can expose multiple variants: remove variants individually, with the unchanged source deleted only after its final variant is removed; importing the source again restores all variants. Built-in themes cannot be deleted. Theme imports, removals, and default changes refresh open editors immediately.
 - Canvas zoom keeps the map point beneath the pointer fixed for Command-scroll and trackpad magnification. Toolbar and keyboard zoom use the most recent pointer location when available, falling back to the viewport center.
 - The native canvas renders an overscanned visible working set instead of instantiating every off-screen node during pan and zoom. Collapsing a branch compacts visible sibling geometry and canvas bounds, temporarily auto-packing the folded card vertically instead of retaining an expanded-layout offset; reopening it restores that saved offset. All exports (HTML, PNG, PDF, Markdown, Mermaid, PlantUML) always use the complete stored tree through the all-descendants layout policy; fold state is not applied outside the live `.bs` canvas.
-- The macOS app remembers inspector visibility, focus mode, and the Notes layer as app-wide workspace preferences across launches and `.bs` files. It defaults off. When on, every non-empty note receives a very small, low-emphasis, non-interactive SF Symbol `note.text` inside its node’s top-right corner and hover/selection may reveal the transient **+ Note**/**Note** action, all without adding preview cards beneath nodes or changing layout spacing, regardless of the note's legacy saved export visibility. The symbol uses the active theme tint with no circle or button chrome. These settings are UI state, not document content, so changing them never dirties a map. The node context menu and ⌥⌘N remain available with the visual layer off; notes are never edited from the presence symbol or inspector.
+- The macOS app remembers inspector visibility and focus mode as app-wide workspace preferences across launches and `.bs` files. Every non-empty note always shows a very small, low-emphasis, non-interactive SF Symbol `note.text` inside its node’s top-right corner, and hover/selection always may reveal the transient **+ Note**/**Note** action, without preview cards beneath nodes or layout spacing changes. The symbol uses the active theme tint with no circle or button chrome. These settings are UI state, not document content, so changing them never dirties a map. Notes are never edited from the presence symbol or inspector; use the pill, context menu, or ⌥⌘N.
 - The recurring native **Support Brainstorm** sheet is app-wide rather than document content. It waits for a ready key map window and never competes with another sheet, alert, restoration flow, note editor, or presentation. **Maybe later**, closing, and ordinary dismissal store the next eligible date 14 calendar days later. **Don’t show this again** permanently suppresses it until preferences are reset. Opening the X, GitHub Sponsors, Patreon, or Buy Me a Coffee URL has no effect on presentation, recurrence, or opt-out state. A single main-actor coordinator owns the active document claim, so automation or tests must not model the reminder independently per window. The standard **About Brainstorm** panel also contains a **Support Brainstorm** link to GitHub Sponsors; opening it is always available and never mutates reminder state.
 - In the macOS app, plain arrows navigate the tree and ⌘+Arrow still reorders or changes depth outside title editing. While editing a title, modifier arrows do not change the tree; Ctrl+Left/Right remains native word/caret navigation and Ctrl+Up/Down is ignored.
 - Text export preserves node order, titles, and the full hierarchy, but not canvas styling, media,

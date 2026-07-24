@@ -35,7 +35,6 @@ struct BrainstormCanvasView: View {
     @State private var clickModifierState = CanvasClickModifierState()
     /// Reference-type cache so pan/zoom do not re-measure the full tree.
     @State private var layoutCache = LayoutResultCache()
-    @State private var uiPreferences = BrainstormUIPreferences.shared
 
     // MARK: - Body
 
@@ -70,10 +69,6 @@ struct BrainstormCanvasView: View {
                     zoom: zoom,
                     viewportSize: geo.size
                 )
-            }
-            .overlay(alignment: .topTrailing) {
-                noteControls
-                    .padding(12)
             }
             .clipped()
             .coordinateSpace(name: "brainstormCanvas")
@@ -290,9 +285,10 @@ struct BrainstormCanvasView: View {
             isFreeDragging: freeDrag?.nodeID == node.id,
             isExporting: false,
             hasNote: node.hasNote,
-            showNoteAction: uiPreferences.showNotesLayer,
-            showNoteIndicator: uiPreferences.showNotesLayer
-                && node.hasNote,
+            // Note chrome is always available: presence marker when a note
+            // exists, and + Note / Note on hover or selection for every node.
+            showNoteAction: true,
+            showNoteIndicator: node.hasNote,
             editSeed: store.editingID == node.id ? store.editingSeed : nil,
             editSelectAll: store.editingID == node.id ? store.editingSelectAll : true,
             noteFocusNamespace: noteFocusNamespace,
@@ -341,50 +337,6 @@ struct BrainstormCanvasView: View {
                 openNote(for: node.id)
             }
         )
-    }
-
-    private var noteControls: some View {
-        BrainstormGlassGroup(spacing: 8) {
-            notesLayerToggle
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Note view controls")
-    }
-
-    private var notesLayerToggle: some View {
-        noteControlButton(
-            systemImage: "note.text",
-            isOn: uiPreferences.showNotesLayer,
-            label: uiPreferences.showNotesLayer
-                ? "Hide Notes layer"
-                : "Show Notes layer",
-            identifier: "notesLayerToggle"
-        ) {
-            uiPreferences.showNotesLayer.toggle()
-        }
-    }
-
-    private func noteControlButton(
-        systemImage: String,
-        isOn: Bool,
-        label: String,
-        identifier: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .semibold))
-                .frame(width: 30, height: 30)
-        }
-        .buttonStyle(.plain)
-        .brainstormGlassCapsule(
-            interactive: true,
-            tint: isOn ? store.theme.selectionColor.opacity(0.8) : nil
-        )
-        .help(label)
-        .accessibilityLabel(label)
-        .accessibilityValue(isOn ? "On" : "Off")
-        .accessibilityIdentifier(identifier)
     }
 
     private func openNote(for nodeID: UUID) {

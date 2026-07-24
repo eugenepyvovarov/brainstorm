@@ -459,9 +459,10 @@ struct BrainstormNodeView: View {
         }
         .buttonStyle(.plain)
         .focusable(false)
+        // Same glass tint for + Note and Note so the pill looks consistent.
         .brainstormGlassCapsule(
             interactive: true,
-            tint: hasNote ? theme.selectionColor.opacity(0.85) : nil
+            tint: theme.selectionColor.opacity(0.85)
         )
         .accessibilityLabel(
             hasNote

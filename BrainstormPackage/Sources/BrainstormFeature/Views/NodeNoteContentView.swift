@@ -24,11 +24,10 @@ public struct NodeNoteContentView: View {
 
     public var body: some View {
         let metrics = NodeNoteRendering.metrics(for: mode)
+        let segments = NodeNoteRendering.displaySegments(for: note)
         VStack(alignment: .leading, spacing: metrics.blockSpacing) {
-            noteBody
-
-            ForEach(note.attachments, id: \.id) { attachment in
-                attachmentView(attachment, metrics: metrics)
+            ForEach(segments) { segment in
+                segmentView(segment, metrics: metrics)
             }
         }
         .font(.system(size: metrics.fontSize))
@@ -44,30 +43,34 @@ public struct NodeNoteContentView: View {
     }
 
     @ViewBuilder
-    private var noteBody: some View {
-        let blocks = NodeNoteRendering.blocks(from: note.bodyMarkdown)
-        ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-            switch block {
-            case .paragraph(let lines):
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(Array(lines.enumerated()), id: \.offset) { _, runs in
-                        inlineText(runs)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            case .unordered(let items):
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(items.enumerated()), id: \.offset) { _, runs in
-                        listRow(marker: "•", runs: runs)
-                    }
-                }
-            case .ordered(let start, let items):
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(items.enumerated()), id: \.offset) { index, runs in
-                        listRow(marker: "\(start + index).", runs: runs)
-                    }
+    private func segmentView(
+        _ segment: NodeNoteDisplaySegment,
+        metrics: NodeNoteRendering.Metrics
+    ) -> some View {
+        switch segment {
+        case .paragraph(let lines):
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, runs in
+                    inlineText(runs)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        case .unordered(let items):
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, runs in
+                    listRow(marker: "•", runs: runs)
+                }
+            }
+        case .ordered(let start, let items):
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, runs in
+                    listRow(marker: "\(start + index).", runs: runs)
+                }
+            }
+        case .youtube(let youtube):
+            youtubeAttachmentView(youtube, metrics: metrics)
+        case .image(let image):
+            imageAttachmentView(image, metrics: metrics)
         }
     }
 
@@ -108,58 +111,63 @@ public struct NodeNoteContentView: View {
     }
 
     @ViewBuilder
-    private func attachmentView(
-        _ attachment: NodeNoteAttachment,
+    private func imageAttachmentView(
+        _ image: NoteImageAttachment,
         metrics: NodeNoteRendering.Metrics
     ) -> some View {
-        switch attachment {
-        case .image(let image):
-            VStack(alignment: .leading, spacing: metrics.blockSpacing) {
-                if let data = Data(base64Encoded: image.pngBase64),
-                   let nsImage = NSImage(data: data)
-                {
-                    Image(nsImage: nsImage)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: .infinity, maxHeight: metrics.maximumImageHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .accessibilityLabel(
-                            NodeNoteRendering.nonEmpty(image.altText) ?? "Note image"
-                        )
-                } else {
-                    unavailableMedia(
-                        systemName: "photo.badge.exclamationmark",
-                        label: "Image unavailable"
+        VStack(alignment: .leading, spacing: metrics.blockSpacing) {
+            if let data = Data(base64Encoded: image.pngBase64),
+               let nsImage = NSImage(data: data)
+            {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: metrics.maximumImageHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .accessibilityLabel(
+                        NodeNoteRendering.nonEmpty(image.altText) ?? "Note image"
                     )
-                }
-                if let caption = NodeNoteRendering.nonEmpty(image.caption) {
-                    Text(caption)
-                        .font(.system(size: max(10, metrics.fontSize - 1)))
-                        .foregroundStyle(secondaryTextColor)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            } else {
+                unavailableMedia(
+                    systemName: "photo.badge.exclamationmark",
+                    label: "Image unavailable"
+                )
             }
-        case .youtube(let youtube):
-            VStack(alignment: .leading, spacing: metrics.blockSpacing) {
-                if mode == .presentation {
-                    NodeNoteYouTubePlayerView(attachment: youtube)
-                        .aspectRatio(16 / 9, contentMode: .fit)
-                        .frame(maxWidth: .infinity, minHeight: 200)
-                } else {
-                    youtubeCard(youtube, metrics: metrics)
-                }
-                if let caption = NodeNoteRendering.nonEmpty(youtube.caption) {
-                    Text(caption)
-                        .font(.system(size: max(10, metrics.fontSize - 1)))
-                        .foregroundStyle(secondaryTextColor)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if mode == .presentation {
-                    Link("Open on YouTube", destination: youtube.canonicalURL)
-                        .font(.system(size: max(10, metrics.fontSize - 1)))
-                        .foregroundStyle(secondaryTextColor)
-                        .marksPresentationInteractiveControl()
-                }
+            if let caption = NodeNoteRendering.nonEmpty(image.caption) {
+                Text(caption)
+                    .font(.system(size: max(10, metrics.fontSize - 1)))
+                    .foregroundStyle(secondaryTextColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func youtubeAttachmentView(
+        _ youtube: NoteYouTubeAttachment,
+        metrics: NodeNoteRendering.Metrics
+    ) -> some View {
+        VStack(alignment: .leading, spacing: metrics.blockSpacing) {
+            // Preview matches presentation: real privacy-enhanced player.
+            // Map/static export keep the compact non-network card.
+            if mode == .presentation || mode == .preview {
+                NodeNoteYouTubePlayerView(attachment: youtube)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                    .frame(maxWidth: .infinity, minHeight: 200)
+            } else {
+                youtubeCard(youtube, metrics: metrics)
+            }
+            if let caption = NodeNoteRendering.nonEmpty(youtube.caption) {
+                Text(caption)
+                    .font(.system(size: max(10, metrics.fontSize - 1)))
+                    .foregroundStyle(secondaryTextColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if mode == .presentation || mode == .preview {
+                Link("Open on YouTube", destination: youtube.canonicalURL)
+                    .font(.system(size: max(10, metrics.fontSize - 1)))
+                    .foregroundStyle(secondaryTextColor)
+                    .marksPresentationInteractiveControl()
             }
         }
     }
@@ -195,9 +203,14 @@ public struct NodeNoteContentView: View {
 
     @ViewBuilder
     private var cardBackground: some View {
-        if mode == .presentation {
+        switch mode {
+        case .presentation:
             Color.clear
-        } else {
+        case .preview:
+            // Note editor modal follows the app shell (system light/dark).
+            Color(nsColor: .textBackgroundColor)
+        case .canvas, .staticExport:
+            // Map-adjacent note cards may use theme chrome when embedded on-canvas.
             theme.chromeBackgroundColor
         }
     }
@@ -210,12 +223,22 @@ public struct NodeNoteContentView: View {
         }
     }
 
+    private var usesAppChromeColors: Bool {
+        mode == .preview
+    }
+
     private var primaryTextColor: Color {
-        theme.color(theme.chromeForeground, fallback: .primary)
+        if usesAppChromeColors {
+            return .primary
+        }
+        return theme.color(theme.chromeForeground, fallback: .primary)
     }
 
     private var secondaryTextColor: Color {
-        theme.color(theme.secondaryText, fallback: .secondary)
+        if usesAppChromeColors {
+            return .secondary
+        }
+        return theme.color(theme.secondaryText, fallback: .secondary)
     }
 }
 
@@ -281,11 +304,11 @@ private struct StaticYouTubeNoteCard: View {
     }
 }
 
-/// Presentation-only privacy-enhanced YouTube player.
+/// Privacy-enhanced YouTube player for presentation and note preview.
 ///
-/// A presentation slide shows the real YouTube player immediately, including
-/// YouTube's own thumbnail and playback controls. Playback still starts only
-/// after the viewer activates the player.
+/// Shows the real YouTube player immediately, including YouTube's own thumbnail
+/// and playback controls. Playback still starts only after the viewer activates
+/// the player.
 public struct NodeNoteYouTubePlayerView: View {
     private let attachment: NoteYouTubeAttachment
 
