@@ -220,6 +220,16 @@ public struct NodeMedia: Codable, Equatable, Hashable, Sendable {
 
 // MARK: - Node
 
+/// Completeness of a node as a task, including roll-up from descendants.
+public enum NodeTaskStatus: String, Equatable, Sendable {
+    /// Not done (and no done descendants).
+    case unchecked
+    /// Some but not all descendants are done.
+    case partial
+    /// Done — a leaf marked done, or every descendant done.
+    case checked
+}
+
 /// A single node in the mind map tree.
 public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendable {
     public var id: UUID
@@ -233,6 +243,9 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
     /// Manual offset from automatic layout position (document points). `nil` = auto.
     public var offsetX: Double?
     public var offsetY: Double?
+    /// Explicit task-done flag. Persists in `.bs` even when the UI hides task chrome.
+    /// Parent partial/checked display is derived from the subtree (see ``taskStatus``).
+    public var isTaskDone: Bool
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -244,6 +257,7 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         case note
         case offsetX
         case offsetY
+        case isTaskDone
     }
 
     public init(
@@ -255,7 +269,8 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         media: NodeMedia = .empty,
         note: NodeNote? = nil,
         offsetX: Double? = nil,
-        offsetY: Double? = nil
+        offsetY: Double? = nil,
+        isTaskDone: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -267,6 +282,7 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         self.note = canonicalNote?.isEmpty == false ? canonicalNote : nil
         self.offsetX = offsetX
         self.offsetY = offsetY
+        self.isTaskDone = isTaskDone
     }
 
     public var hasChildren: Bool { !children.isEmpty }
@@ -277,6 +293,29 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
 
     public var manualOffset: CGSize {
         CGSize(width: offsetX ?? 0, height: offsetY ?? 0)
+    }
+
+    /// Derived completeness for UI: leaves follow ``isTaskDone``; parents roll up children.
+    public var taskStatus: NodeTaskStatus {
+        if children.isEmpty {
+            return isTaskDone ? .checked : .unchecked
+        }
+        var anyProgress = false
+        var allChecked = true
+        for child in children {
+            switch child.taskStatus {
+            case .unchecked:
+                allChecked = false
+            case .partial:
+                anyProgress = true
+                allChecked = false
+            case .checked:
+                anyProgress = true
+            }
+        }
+        if allChecked { return .checked }
+        if anyProgress { return .partial }
+        return isTaskDone ? .checked : .unchecked
     }
 
     /// Fresh main node title is empty so the user can type immediately (BrainstormNode first-map UX).
@@ -300,6 +339,7 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         note = decodedNote?.isEmpty == false ? decodedNote : nil
         offsetX = try c.decodeIfPresent(Double.self, forKey: .offsetX)
         offsetY = try c.decodeIfPresent(Double.self, forKey: .offsetY)
+        isTaskDone = try c.decodeIfPresent(Bool.self, forKey: .isTaskDone) ?? false
     }
 
     /// Encode a sparse, human-readable node. Defaults are supplied by the
@@ -323,6 +363,9 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         }
         try c.encodeIfPresent(offsetX, forKey: .offsetX)
         try c.encodeIfPresent(offsetY, forKey: .offsetY)
+        if isTaskDone {
+            try c.encode(true, forKey: .isTaskDone)
+        }
         if !children.isEmpty {
             try c.encode(children, forKey: .children)
         }
@@ -338,6 +381,14 @@ public struct BrainstormNode: Identifiable, Codable, Equatable, Hashable, Sendab
         }
         result.children = children.map { $0.canonicalized() }
         return result
+    }
+
+    /// Set ``isTaskDone`` on this node and every descendant.
+    public mutating func setTaskDoneRecursively(_ done: Bool) {
+        isTaskDone = done
+        for i in children.indices {
+            children[i].setTaskDoneRecursively(done)
+        }
     }
 }
 

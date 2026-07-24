@@ -84,6 +84,8 @@ public final class BrainstormStore {
     public private(set) var historyEpoch: UInt64 = 0
     /// Bumped for note-only mutations without pretending the tree structure changed.
     public private(set) var noteEpoch: UInt64 = 0
+    /// Bumped when only task-done flags change — canvas refreshes chrome without re-layout.
+    public private(set) var taskEpoch: UInt64 = 0
     @ObservationIgnored private var noteAutosaveTask: Task<Void, Never>?
 
     // MARK: - View chrome
@@ -531,6 +533,7 @@ public final class BrainstormStore {
         do {
             if isEditing { commitEditing() }
             if noteEditingID != nil { commitNoteEditing() }
+            let previousFileURL = fileURL
             let accessed = target.startAccessingSecurityScopedResource()
             defer { if accessed { target.stopAccessingSecurityScopedResource() } }
             let file = BrainstormFile(root: root, themeID: themeID)
@@ -540,6 +543,12 @@ public final class BrainstormStore {
             markClean()
             DocumentSession.shared.updateFileURL(documentID, url: target)
             RecentDocuments.shared.note(url: target)
+            // Keep per-map task chrome when an untitled map is first saved.
+            BrainstormUIPreferences.shared.rekeyTaskCompleteness(
+                from: previousFileURL,
+                documentID: documentID,
+                to: target
+            )
             performAutosave()
             return true
         } catch {
@@ -2124,11 +2133,103 @@ public final class BrainstormStore {
         }
     }
 
+    /// Clear every node’s style overrides so fill/text/branch/border/shape/font
+    /// all track the active map theme again (and default shape/weight).
+    public func resetAllStyles() {
+        if isEditing { commitEditing() }
+        performUndoable(named: "Reset All Styles") {
+            self.clearStyles(in: &self.root)
+        }
+    }
+
+    // MARK: - Task completeness
+
+    /// Derived task roll-up for a node (unchecked / partial / checked).
+    public func taskStatus(for id: UUID) -> NodeTaskStatus {
+        node(id: id)?.taskStatus ?? .unchecked
+    }
+
+    /// Toggle done state. Checked → clear subtree. Unchecked or partial → mark
+    /// the whole subtree done (parent complete forces children complete).
+    public func toggleTaskDone(id: UUID? = nil) {
+        let target = id ?? ensureSelection()
+        guard let current = node(id: target) else { return }
+        let makeDone = current.taskStatus != .checked
+        setTaskDone(id: target, done: makeDone)
+    }
+
+    /// Mark a node and every descendant done or not done. Persists in `.bs`
+    /// even when the task chrome UI preference is hidden.
+    ///
+    /// Fast path: does **not** bump ``structureEpoch`` (layout geometry is
+    /// unchanged), only ``taskEpoch`` so checkboxes/strikethrough repaint.
+    public func setTaskDone(id: UUID? = nil, done: Bool) {
+        let target = id ?? ensureSelection()
+        guard let current = node(id: target) else { return }
+        // Skip no-ops (full tree already matches the requested state).
+        if done, current.taskStatus == .checked { return }
+        if !done, current.taskStatus == .unchecked { return }
+
+        if isEditing { commitEditing() }
+        if noteEditingID != nil { commitNoteEditing() }
+
+        let beforeRoot = root
+        let beforeSelected = selectedID
+        let beforeSelection = selectedIDs
+        let actionName = done ? "Mark Done" : "Mark Undone"
+
+        _ = updateNode(id: target) { node in
+            node.setTaskDoneRecursively(done)
+        }
+        // Re-seat root so Observation publishes even for deep inout mutations.
+        root = root
+        markDirty()
+        taskEpoch &+= 1
+        historyEpoch &+= 1
+
+        undoManager.beginUndoGrouping()
+        undoManager.registerUndo(withTarget: self) { target in
+            let redoRoot = target.root
+            let redoSelected = target.selectedID
+            let redoSelection = target.selectedIDs
+            target.root = beforeRoot
+            target.setSelection(primary: beforeSelected, ids: beforeSelection)
+            target.editingID = nil
+            target.editingSeed = nil
+            target.editingDraft = ""
+            target.titleBeforeEdit = ""
+            target.markDirty()
+            target.taskEpoch &+= 1
+            target.historyEpoch &+= 1
+            target.undoManager.registerUndo(withTarget: target) { redo in
+                redo.root = redoRoot
+                redo.setSelection(primary: redoSelected, ids: redoSelection)
+                redo.editingID = nil
+                redo.editingSeed = nil
+                redo.editingDraft = ""
+                redo.titleBeforeEdit = ""
+                redo.markDirty()
+                redo.taskEpoch &+= 1
+                redo.historyEpoch &+= 1
+            }
+            target.undoManager.setActionName(actionName)
+        }
+        undoManager.setActionName(actionName)
+        undoManager.endUndoGrouping()
+    }
+
     private func clearOffsets(in node: inout BrainstormNode) {
         node.offsetX = nil
         node.offsetY = nil
         for i in node.children.indices {
             clearOffsets(in: &node.children[i])
+        }
+    }
+
+    private func clearStyles(in node: inout BrainstormNode) {
+        node.style = .default
+        for i in node.children.indices {
+            clearStyles(in: &node.children[i])
         }
     }
 
