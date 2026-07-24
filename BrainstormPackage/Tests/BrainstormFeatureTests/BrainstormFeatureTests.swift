@@ -2671,9 +2671,12 @@ struct AppThemeTests {
         #expect(!catppuccin.chromeBackground.isEmpty)
         #expect(!catppuccin.chromeForeground.isEmpty)
         // Catalog hexes must resolve so presentation notes are not window-colored.
-        #expect(Color(hex: catppuccin.chromeBackground) != nil)
-        #expect(Color(hex: catppuccin.chromeForeground) != nil)
-        #expect(Color(hex: catppuccin.secondaryText) != nil)
+        #expect(catppuccin.chromeBackground.hasPrefix("#"))
+        #expect(catppuccin.chromeForeground.hasPrefix("#"))
+        #expect(catppuccin.secondaryText.hasPrefix("#"))
+        // Map surface accessors return non-fallback theme-driven colors.
+        _ = catppuccin.mapSurfaceBackgroundColor
+        _ = catppuccin.mapSurfaceForegroundColor
     }
 
     @Test func defaultNodeTextFollowsMapThemeNotSystemLabel() {

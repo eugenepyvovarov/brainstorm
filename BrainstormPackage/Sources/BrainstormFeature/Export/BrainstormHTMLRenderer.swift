@@ -3327,20 +3327,64 @@ enum BrainstormHTMLRenderer {
                 session.lastX = event.clientX;
                 session.lastY = event.clientY;
               });
+              // Free-look pointerdown calls preventDefault, which suppresses
+              // the synthetic click. Activate slides on an unmoved pointerup.
+              const activatePresentationSlideFromEvent = event => {
+                if (currentMode !== "presentation") return false;
+                if (
+                  activeCameraAnimation
+                  || performance.now() < suppressPresentationSlideClickUntil
+                ) {
+                  return false;
+                }
+                if (
+                  event.target?.closest?.(
+                    "button, a, iframe, .presentation-note, "
+                    + ".presentation-note-back"
+                  )
+                ) {
+                  return false;
+                }
+                let slide = event.target?.closest?.(".presentation-slide");
+                if (!slide && Number.isFinite(event.clientX)) {
+                  const hit = document.elementFromPoint(
+                    event.clientX,
+                    event.clientY
+                  );
+                  slide = hit?.closest?.(".presentation-slide") ?? null;
+                }
+                if (!slide) return false;
+                const index = slideIndexByElement.get(slide) ?? -1;
+                if (index < 0) return false;
+                if (index === currentSlideIndex) {
+                  if (slide.dataset.face === "node") {
+                    if (slideHasActiveNote(slide)) {
+                      toggleCurrentNote();
+                    } else {
+                      navigatePresentation(1);
+                    }
+                  }
+                  return true;
+                }
+                // Any visible node is a jump target so free-look pan/zoom can
+                // land on a branch and continue the presentation from there.
+                navigatePresentationTo(index);
+                return true;
+              };
+
               const endPresentationPointer = (event, cancelled = false) => {
                 if (!presentationPointers.has(event.pointerId)) return;
                 presentationPointers.delete(event.pointerId);
                 if (
                   presentationPanSession?.pointerId === event.pointerId
                 ) {
-                  if (
-                    !cancelled
-                    && presentationPanSession.moved
-                  ) {
+                  if (!cancelled && presentationPanSession.moved) {
                     // Dragging must not also activate the node under the
                     // pointer (especially Mobile Safari's synthetic click).
                     suppressPresentationSlideClickUntil =
                       performance.now() + 450;
+                  } else if (!cancelled && !presentationPanSession.moved) {
+                    activatePresentationSlideFromEvent(event);
                   }
                   presentationPanSession = null;
                 }
@@ -3403,31 +3447,15 @@ enum BrainstormHTMLRenderer {
                   return;
                 }
 
-                const slide = event.target.closest?.(".presentation-slide");
-                if (!slide || currentMode !== "presentation") return;
-                if (
-                  activeCameraAnimation
-                  || performance.now() < suppressPresentationSlideClickUntil
-                ) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  return;
-                }
-                const index = slideIndexByElement.get(slide) ?? -1;
-                if (index < 0) return;
-                if (index === currentSlideIndex) {
-                  if (slide.dataset.face === "node") {
-                    if (slideHasActiveNote(slide)) {
-                      toggleCurrentNote();
-                    } else {
-                      navigatePresentation(1);
-                    }
+                if (currentMode !== "presentation") return;
+                if (event.target.closest?.(".presentation-slide")) {
+                  // Prefer pointerup activation; keep click as a fallback for
+                  // environments that do not deliver pointer events.
+                  if (activatePresentationSlideFromEvent(event)) {
+                    event.preventDefault();
+                    event.stopPropagation();
                   }
-                  return;
                 }
-                // Any visible node is a jump target so free-look pan/zoom can
-                // land on a branch and continue the presentation from there.
-                navigatePresentationTo(index);
               });
 
               const applyHash = () => {

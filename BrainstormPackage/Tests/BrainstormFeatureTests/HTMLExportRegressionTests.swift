@@ -196,6 +196,12 @@ struct HTMLExportRegressionTests {
                 "Any visible node is a jump target so free-look pan/zoom can"
             )
         )
+        #expect(html.contains("const activatePresentationSlideFromEvent"))
+        #expect(
+            html.contains(
+                "Free-look pointerdown calls preventDefault, which suppresses"
+            )
+        )
         #expect(!html.contains("presentationSwipe"))
         #expect(html.contains("const slideIndexByElement = new WeakMap();"))
         #expect(html.contains("const slideByNodeID = new Map();"))
