@@ -205,13 +205,14 @@ public struct NodeNoteContentView: View {
     private var cardBackground: some View {
         switch mode {
         case .presentation:
+            // Presentation note back supplies the themed card fill.
             Color.clear
         case .preview:
             // Note editor modal follows the app shell (system light/dark).
             Color(nsColor: .textBackgroundColor)
         case .canvas, .staticExport:
-            // Map-adjacent note cards may use theme chrome when embedded on-canvas.
-            theme.chromeBackgroundColor
+            // Map-adjacent note cards use the mind-map palette, not window chrome.
+            theme.mapSurfaceBackgroundColor
         }
     }
 
@@ -231,14 +232,14 @@ public struct NodeNoteContentView: View {
         if usesAppChromeColors {
             return .primary
         }
-        return theme.color(theme.chromeForeground, fallback: .primary)
+        return theme.mapSurfaceForegroundColor
     }
 
     private var secondaryTextColor: Color {
         if usesAppChromeColors {
             return .secondary
         }
-        return theme.color(theme.secondaryText, fallback: .secondary)
+        return theme.mapSurfaceSecondaryTextColor
     }
 }
 

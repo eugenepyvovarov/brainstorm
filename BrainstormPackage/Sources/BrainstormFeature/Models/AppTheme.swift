@@ -411,6 +411,38 @@ public extension AppTheme {
         Color.secondary
     }
 
+    /// Map-facing note / presentation surfaces. Prefer the theme’s chrome hex,
+    /// then node fill, then the canvas — never the system window background.
+    var mapSurfaceBackgroundColor: Color {
+        if let c = Color(hex: chromeBackground), !chromeBackground.isEmpty {
+            return c
+        }
+        if let c = Color(hex: nodeFill), !nodeFill.isEmpty {
+            return c
+        }
+        return canvasBackgroundColor
+    }
+
+    /// Primary text on map-facing note / presentation surfaces.
+    var mapSurfaceForegroundColor: Color {
+        if let c = Color(hex: chromeForeground), !chromeForeground.isEmpty {
+            return c
+        }
+        if let c = Color(hex: nodeText), !nodeText.isEmpty {
+            return c
+        }
+        // System theme: adaptive label that tracks light/dark with the map.
+        return Color(nsColor: .labelColor)
+    }
+
+    /// Secondary text on map-facing note / presentation surfaces.
+    var mapSurfaceSecondaryTextColor: Color {
+        if let c = Color(hex: secondaryText), !secondaryText.isEmpty {
+            return c
+        }
+        return Color(nsColor: .secondaryLabelColor)
+    }
+
     /// Map selection / accent. Used only by canvas, presentation map chrome, and
     /// node styling — not by app window controls.
     var selectionColor: Color {

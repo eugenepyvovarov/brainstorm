@@ -1458,9 +1458,7 @@ private struct PresentationNoteBack<NoteContent: View>: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text(displayTitle)
                     .font(.title2.weight(.semibold))
-                    .foregroundStyle(
-                        theme.color(theme.chromeForeground, fallback: .primary)
-                    )
+                    .foregroundStyle(theme.mapSurfaceForegroundColor)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityAddTraits(.isHeader)
 
@@ -1474,9 +1472,10 @@ private struct PresentationNoteBack<NoteContent: View>: View {
         }
         .scrollIndicators(.automatic)
         .frame(width: size.width, height: size.height)
+        // Map theme palette — not system window chrome.
         .background(
             RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .fill(theme.chromeBackgroundColor)
+                .fill(theme.mapSurfaceBackgroundColor)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 30, style: .continuous)
@@ -1957,21 +1956,8 @@ private struct PresentationMapConnectorLayer: View {
                 )
                 let color = edge.colorHex.flatMap(Color.init(hex:))
                     ?? theme.branchColor
+                // Single hairline only — no outer glow (looks mushy under focus zoom).
                 let lineWidth: CGFloat = 1.4
-
-                if !reduceTransparency {
-                    context.stroke(
-                        path,
-                        with: .color(
-                            color.opacity(theme.isDark ? 0.24 : 0.16)
-                        ),
-                        style: StrokeStyle(
-                            lineWidth: lineWidth + 1.8,
-                            lineCap: .round,
-                            lineJoin: .round
-                        )
-                    )
-                }
                 context.stroke(
                     path,
                     with: .color(
