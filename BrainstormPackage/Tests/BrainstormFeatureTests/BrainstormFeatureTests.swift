@@ -160,6 +160,36 @@ struct DocumentWindowTabbingTests {
         DocumentWindowTabbing.unregister(documentID: documentID, window: window)
     }
 
+    @Test func coordinatorSyncsDocumentEditedAndRepresentedURL() {
+        let documentID = UUID()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let fileURL = URL(fileURLWithPath: "/tmp/BrainstormTitleMenuTest.bs")
+        let coordinator = WindowChromeBridge.Coordinator(
+            documentID: documentID,
+            isDocumentEdited: true,
+            representedURL: fileURL,
+            shouldClose: { _ in true },
+            onNewTab: { _ in }
+        )
+        coordinator.attach(to: window)
+        #expect(window.isDocumentEdited)
+        #expect(window.representedURL?.standardizedFileURL == fileURL.standardizedFileURL)
+
+        coordinator.isDocumentEdited = false
+        coordinator.representedURL = nil
+        coordinator.applyDocumentChrome(to: window)
+        #expect(!window.isDocumentEdited)
+        #expect(window.representedURL == nil)
+
+        coordinator.detach()
+        DocumentWindowTabbing.unregister(documentID: documentID, window: window)
+    }
+
     @Test func coordinatorRespectsForwardedCloseVeto() {
         let forwardedDelegate = TestWindowDelegate(allowsClose: false)
         var appCloseHandlerCalled = false
@@ -338,13 +368,40 @@ struct BrainstormStoreTests {
         let preferences = BrainstormUIPreferences(defaults: defaults)
         #expect(preferences.showInspector)
         #expect(!preferences.isFocusMode)
+        #expect(preferences.colorsExpanded)
+        #expect(preferences.typeExpanded)
 
         preferences.showInspector = false
         preferences.isFocusMode = true
+        preferences.colorsExpanded = false
+        preferences.mediaExpanded = false
+        let fileA = URL(fileURLWithPath: "/tmp/map-a.bs")
+        let fileB = URL(fileURLWithPath: "/tmp/map-b.bs")
+        let docA = UUID()
+        let docB = UUID()
+        preferences.setShowTaskCompleteness(true, fileURL: fileA, documentID: docA)
+        preferences.setShowTaskCompleteness(false, fileURL: fileB, documentID: docB)
 
         let restored = BrainstormUIPreferences(defaults: defaults)
         #expect(!restored.showInspector)
         #expect(restored.isFocusMode)
+        #expect(!restored.colorsExpanded)
+        #expect(!restored.mediaExpanded)
+        #expect(restored.showTaskCompleteness(fileURL: fileA, documentID: docA))
+        #expect(!restored.showTaskCompleteness(fileURL: fileB, documentID: docB))
+
+        // Untitled → saved rekeys task chrome onto the file path.
+        let untitledID = UUID()
+        preferences.setShowTaskCompleteness(true, fileURL: nil, documentID: untitledID)
+        let saved = URL(fileURLWithPath: "/tmp/saved-from-untitled.bs")
+        preferences.rekeyTaskCompleteness(
+            from: nil,
+            documentID: untitledID,
+            to: saved
+        )
+        #expect(
+            preferences.showTaskCompleteness(fileURL: saved, documentID: untitledID)
+        )
 
         let store = BrainstormStore(startEditing: false, uiPreferences: restored)
         #expect(store.isFocusMode)
@@ -825,6 +882,68 @@ struct BrainstormStoreTests {
         // Auto clears override so theme / contrast can apply
         store.setTextColor(nil)
         #expect(store.root.style.textHex == nil)
+    }
+
+    @Test func taskCompletenessCascadesAndRollsUp() throws {
+        let store = BrainstormStore(startEditing: false)
+        store.select(store.root.id)
+        let a = store.addChild()!
+        store.select(store.root.id)
+        let b = store.addChild()!
+        #expect(store.root.children.count == 2)
+        #expect(store.taskStatus(for: store.root.id) == .unchecked)
+
+        store.setTaskDone(id: a, done: true)
+        #expect(store.node(id: a)?.isTaskDone == true)
+        #expect(store.taskStatus(for: a) == .checked)
+        #expect(store.taskStatus(for: store.root.id) == .partial)
+
+        store.setTaskDone(id: b, done: true)
+        #expect(store.taskStatus(for: store.root.id) == .checked)
+
+        // Parent toggle clears the whole subtree.
+        store.toggleTaskDone(id: store.root.id)
+        #expect(store.node(id: a)?.isTaskDone == false)
+        #expect(store.node(id: b)?.isTaskDone == false)
+        #expect(store.taskStatus(for: store.root.id) == .unchecked)
+
+        // Parent mark-done forces every descendant done.
+        store.setTaskDone(id: store.root.id, done: true)
+        #expect(store.node(id: a)?.isTaskDone == true)
+        #expect(store.node(id: b)?.isTaskDone == true)
+
+        // Progress survives encode/decode (UI visibility is a separate preference).
+        let data = try BrainstormCodec.encode(BrainstormFile(root: store.root))
+        let decoded = try BrainstormCodec.decode(from: data)
+        #expect(decoded.root.children.count == 2)
+        #expect(decoded.root.children[0].isTaskDone)
+        #expect(decoded.root.children[1].isTaskDone)
+        #expect(decoded.root.taskStatus == .checked)
+    }
+
+    @Test func resetAllStylesClearsOverridesOnWholeTree() {
+        let store = BrainstormStore(startEditing: false)
+        let child = store.addChild()!
+        store.select(child)
+        store.setFillColor("#D6EAF8")
+        store.setTextColor("#1A5276")
+        store.setShape(.capsule)
+        store.setBold(true)
+        store.setBranchColor("#5DADE2")
+        store.setBorderWidth(3)
+        store.select(store.root.id)
+        store.setFillColor("#111111")
+
+        store.resetAllStyles()
+
+        #expect(store.root.style.isDefault)
+        #expect(store.root.children[0].style.isDefault)
+        // Theme itself is unchanged — only per-node overrides were cleared.
+        #expect(store.themeID == AppTheme.system.id || !store.themeID.isEmpty)
+
+        store.undo()
+        #expect(store.root.style.fillHex == "#111111")
+        #expect(store.root.children[0].style.shape == .capsule)
     }
 
     @Test func styleMediaAndManualOffsetRoundTrip() throws {
@@ -2305,6 +2424,24 @@ struct LayoutEngineTests {
         #expect(plainNode.frame.height == iconNode.frame.height)
     }
 
+    @Test func taskCheckboxWidensNodeSoTitleIsNotEllipsized() {
+        let engine = LayoutEngine()
+        let title = "Open Source Project"
+        var plainRoot = BrainstormNode.root(title: "R")
+        plainRoot.children = [BrainstormNode(title: title)]
+        let plain = engine.layout(root: plainRoot).nodes.first { $0.title == title }!
+        let withTasks = engine.layout(
+            root: plainRoot,
+            showTaskCompleteness: true
+        ).nodes.first { $0.title == title }!
+        #expect(withTasks.frame.width > plain.frame.width)
+        #expect(
+            withTasks.frame.width
+                >= plain.frame.width + engine.taskCheckboxSlot
+        )
+        #expect(withTasks.frame.height == plain.frame.height)
+    }
+
     @Test func rootWithMediaFitsFullTitleWithoutTruncation() {
         // Regression: "Brainstorm app" + logo was laid out title-only-wide → "Brainstorm…".
         let title = "Brainstorm app"
@@ -2527,6 +2664,35 @@ struct AppThemeTests {
         // Fixed palettes ignore the live color scheme.
         #expect(AppTheme.dracula.resolvesAsDark(in: .light))
         #expect(!AppTheme.vsCodeLight.resolvesAsDark(in: .dark))
+    }
+
+    @Test func mapSurfaceColorsPreferThemePaletteNotWindowChrome() {
+        let catppuccin = AppTheme.catppuccinMocha
+        #expect(!catppuccin.chromeBackground.isEmpty)
+        #expect(!catppuccin.chromeForeground.isEmpty)
+        // Catalog hexes must resolve so presentation notes are not window-colored.
+        #expect(Color(hex: catppuccin.chromeBackground) != nil)
+        #expect(Color(hex: catppuccin.chromeForeground) != nil)
+        #expect(Color(hex: catppuccin.secondaryText) != nil)
+    }
+
+    @Test func defaultNodeTextFollowsMapThemeNotSystemLabel() {
+        // Unstyled child nodes (typical new sibling/child) resolve text from
+        // the active map palette, not macOS labelColor / Color.primary alone.
+        let style = NodeStyle()
+        let catppuccin = AppTheme.catppuccinMocha.resolvedTextColor(
+            style: style,
+            isRoot: false
+        )
+        let light = AppTheme.vsCodeLight.resolvedTextColor(
+            style: style,
+            isRoot: false
+        )
+        #expect(catppuccin != light)
+        #expect(
+            AppTheme.catppuccinMocha.defaultText(isRoot: false)?.uppercased()
+                == "#CDD6F4"
+        )
     }
 
     @Test func applyThemeIsUndoableAndMarksDirty() {
@@ -3320,13 +3486,29 @@ struct BrainstormTextExporterTests {
         #expect(output == """
         # Roadmap & "Launch"
 
-        - Roadmap & "Launch"
-            - Write \\*docs\\*<br>Review &lt;copy&gt;
-                - Hidden \\[task\\]
-                    - Final
-            - Ship
+        - [ ] Roadmap & "Launch"
+            - [ ] Write \\*docs\\*<br>Review &lt;copy&gt;
+                - [ ] Hidden \\[task\\]
+                    - [ ] Final
+            - [ ] Ship
 
         """)
+    }
+
+    @Test func markdownExportsTaskCheckboxesFromCompleteness() {
+        var map = BrainstormNode(title: "Plan")
+        var done = BrainstormNode(title: "Done item")
+        done.isTaskDone = true
+        var open = BrainstormNode(title: "Open item")
+        open.isTaskDone = false
+        map.children = [done, open]
+
+        let output = BrainstormTextExporter.string(root: map, format: .markdown)
+        #expect(output.contains("- [ ] Plan"))
+        #expect(output.contains("- [x] Done item"))
+        #expect(output.contains("- [ ] Open item"))
+        // Parent with one done child is partial → still [ ] in GFM.
+        #expect(map.taskStatus == .partial)
     }
 
     @Test func mermaidUsesQuotedLabelsAndIncludesCollapsedDescendants() {

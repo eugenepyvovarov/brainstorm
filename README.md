@@ -66,6 +66,29 @@ pasted or dragged images, and YouTube links.
 Brainstorm saves human-readable JSON `.bs` files. Existing v1/v2 files remain
 readable; new saves use v3 so node notes are preserved.
 
+Click the window title for document actions: **Save**, **Save As…**, **Export**,
+**Open…**, and **Open Recent**. After a map is saved on disk, the title also
+shows the standard macOS file proxy icon—⌘-click or click-and-hold for the
+folder path, and use **Reveal in Finder** or **Copy Path** from the title menu.
+
+The **Sidebar** toolbar control toggles a solid trailing style column. Map theme
+stays at the top; collapsible **Colors**, **Type**, **Emoji**, and **Reset**
+blocks follow. **Colors** uses a Fill / Text / Border / Branch segmented control
+with one shared swatch grid; **Type** holds shape, weight, size, and border
+width; **Reset** offers map-wide **Reset Positions** and **Reset Styles**
+(clears every node’s style overrides so the active theme drives appearance
+again). The column resizes the canvas instead of sliding over it as a drawer.
+
+Use the toolbar **Tasks** control (after **Present**) to show or hide task
+checkboxes on nodes. That chrome choice is remembered **per map file**;
+completion itself still lives in the `.bs` file. Checking a node marks it done
+and marks every descendant done; a parent with some finished children shows a
+half-filled state. Done titles use strikethrough. Markdown export writes GFM
+task items (`- [ ]` / `- [x]`) from that stored progress.
+
+Style **Sidebar** visibility and which inspector blocks are expanded (Colors,
+Type, Emoji, Reset) are remembered app-wide across launches.
+
 Export a map as self-contained interactive HTML, PNG, PDF, Markdown, Mermaid,
 or PlantUML. Every export includes the complete tree with all branches expanded;
 fold state is kept only in the live `.bs` canvas. HTML export suggests a portable
