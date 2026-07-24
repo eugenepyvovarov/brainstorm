@@ -1,11 +1,15 @@
 name: Publish Brainstorm Homebrew Cask
 
+# Manual re-run / repair path. Preferred path is the Release workflow, which
+# publishes the app then chains this same script with the just-built version.
+
 "on":
   workflow_dispatch:
     inputs:
       version:
-        description: Published Brainstorm version to add to the Homebrew Cask, for example 1.0.12
-        required: true
+        description: Published Brainstorm version (e.g. 1.0.12). Leave empty to use the latest GitHub release.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -13,13 +17,22 @@ permissions:
 jobs:
   homebrew:
     runs-on: macos-ultramac
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       HOMEBREW_TAP_REPOSITORY: eugenepyvovarov/homebrew-cask
+      HOMEBREW_TAP_UPSTREAM: Homebrew/homebrew-cask
       BRAINSTORM_HOMEBREW_TOKEN: ${{ secrets.BRAINSTORM_HOMEBREW_TOKEN }}
+      BRAINSTORM_GITHUB_TOKEN: ${{ secrets.BRAINSTORM_GITHUB_TOKEN }}
     steps:
       - name: Check out release tooling
         uses: actions/checkout@v4
 
-      - name: Verify published release and update the Homebrew Cask
-        run: scripts/release/publish-homebrew-cask.sh "${{ inputs.version }}"
+      - name: Sync tap from parent, verify release, and update the Cask
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          if [[ -n "$version" ]]; then
+            scripts/release/publish-homebrew-cask.sh "$version"
+          else
+            scripts/release/publish-homebrew-cask.sh
+          fi
