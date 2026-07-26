@@ -3198,9 +3198,34 @@ struct DocumentSessionTests {
         #expect(session.hasAutosave(for: desc.id))
         #expect(FileManager.default.fileExists(atPath: session.sessionFileURL.path))
 
+        // Clean untitled seeds are pruned on the next process launch so Welcome
+        // is not flooded with empty maps left by earlier sessions.
+        let reloaded = DocumentSession(supportDirectory: dir)
+        #expect(reloaded.state.openDocuments.isEmpty)
+        #expect(reloaded.launchRestorableDocumentID() == nil)
+        #expect(!reloaded.hasAutosave(for: desc.id))
+    }
+
+    @Test func dirtyUntitledSurvivesSessionReload() throws {
+        let (session, dir) = try tempSession()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let desc = session.registerNewDocument(displayName: "Trip")
+        try session.writeAutosave(
+            file: BrainstormFile(root: .root(title: "Real work")),
+            for: desc.id
+        )
+        session.updateDirtyState(
+            id: desc.id,
+            isDirty: true,
+            contentRevision: 1,
+            savedRevision: 0
+        )
+
         let reloaded = DocumentSession(supportDirectory: dir)
         #expect(reloaded.state.openDocuments.map(\.id) == [desc.id])
-        #expect(reloaded.launchDocumentID() == desc.id)
+        #expect(reloaded.launchRestorableDocumentID() == desc.id)
+        #expect(reloaded.restorePayload(for: desc.id).root.title == "Real work")
     }
 
     @Test func inactiveAutosaveDoesNotReplaceExplicitActiveDocument() throws {
@@ -3373,6 +3398,51 @@ struct DocumentSessionTests {
 
         session.updateDirtyState(id: blank.id, isDirty: true, contentRevision: 1, savedRevision: 0)
         #expect(session.launchRestorableDocumentID() == blank.id)
+    }
+
+    @Test func lateAutosaveDoesNotResurrectClosedDocument() throws {
+        let (session, dir) = try tempSession()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let blank = session.registerNewDocument()
+        #expect(session.state.openDocuments.count == 1)
+        session.closeDocument(blank.id)
+        #expect(session.state.openDocuments.isEmpty)
+        #expect(!session.hasAutosave(for: blank.id))
+
+        // Simulates ContentView.onDisappear / delayed autosave after close.
+        try session.writeAutosave(
+            file: BrainstormFile(root: .root(title: "Ghost")),
+            for: blank.id
+        )
+        #expect(session.state.openDocuments.isEmpty)
+        #expect(session.launchRestorableDocumentID() == nil)
+    }
+
+    @Test func pruneGhostDocumentsRemovesBlankSeedsAndDeadPaths() throws {
+        let (session, dir) = try tempSession()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let blank = session.registerNewDocument()
+        let missing = session.registerNewDocument(displayName: "Missing")
+        session.updateFileURL(
+            missing.id,
+            url: dir.appendingPathComponent("does-not-exist.bs")
+        )
+        let dirty = session.registerNewDocument(displayName: "Dirty")
+        session.updateDirtyState(
+            id: dirty.id,
+            isDirty: true,
+            contentRevision: 2,
+            savedRevision: 0
+        )
+
+        let removed = session.pruneGhostDocuments()
+        #expect(removed >= 2)
+        #expect(session.descriptor(for: blank.id) == nil)
+        #expect(session.descriptor(for: missing.id) == nil)
+        #expect(session.descriptor(for: dirty.id) != nil)
+        #expect(session.launchRestorableDocumentID() == dirty.id)
     }
 
     @Test func storeRestoreAndPerformAutosaveRoundTrip() throws {

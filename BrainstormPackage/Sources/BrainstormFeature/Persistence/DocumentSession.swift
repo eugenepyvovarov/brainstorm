@@ -133,6 +133,9 @@ public final class DocumentSession {
 
         try? fileManager.createDirectory(at: autosaveDirectory, withIntermediateDirectories: true)
         state = Self.loadState(from: sessionFileURL, decoder: decoder) ?? .empty
+        // Drop blank untitled seeds and dead path hints left by earlier
+        // ensureRegistered / close races so Welcome is not flooded with ghosts.
+        pruneGhostDocuments()
     }
 
     // MARK: - Launch
@@ -314,12 +317,69 @@ public final class DocumentSession {
     }
 
     public func closeDocument(_ id: UUID) {
+        let removed = state.openDocuments.first { $0.id == id }
         state.openDocuments.removeAll { $0.id == id }
         if state.activeDocumentID == id {
             state.activeDocumentID = state.openDocuments.first?.id
         }
-        // Keep autosave file so “reopen last” can still recover briefly; prune later.
+        // Blank clean untitled seeds and missing-path ghosts should not leave
+        // recovery files behind. Real dirty/saved work keeps its autosave briefly.
+        if let removed, shouldDiscardAutosave(for: removed) {
+            removeAutosaveFiles(for: removed)
+        }
         persistSession()
+    }
+
+    /// Drop non-restorable session rows and orphaned autosave files.
+    /// Safe to call on launch and from the welcome screen.
+    @discardableResult
+    public func pruneGhostDocuments() -> Int {
+        let before = state.openDocuments.count
+        let keep = state.openDocuments.filter(isRestorable)
+        let discarded = state.openDocuments.filter { desc in
+            !keep.contains(where: { $0.id == desc.id })
+        }
+        for desc in discarded {
+            removeAutosaveFiles(for: desc)
+        }
+        state.openDocuments = keep
+        if let active = state.activeDocumentID,
+           !keep.contains(where: { $0.id == active })
+        {
+            state.activeDocumentID = keep.first?.id
+        }
+        // Orphan autosaves not referenced by any remaining session row.
+        let liveNames = Set(keep.map(\.autosaveFileName))
+        if let urls = try? fileManager.contentsOfDirectory(
+            at: autosaveDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) {
+            for url in urls {
+                let name = url.lastPathComponent
+                // Keep rotated backups only when their primary autosave still lives.
+                if name.hasSuffix(".bak") {
+                    let primary = String(name.dropLast(4))
+                    if !liveNames.contains(primary) {
+                        try? fileManager.removeItem(at: url)
+                    }
+                    continue
+                }
+                if name.hasSuffix(".tmp") {
+                    try? fileManager.removeItem(at: url)
+                    continue
+                }
+                if name.hasSuffix(".\(BrainstormCodec.fileExtension)"),
+                   !liveNames.contains(name)
+                {
+                    try? fileManager.removeItem(at: url)
+                }
+            }
+        }
+        if state.openDocuments.count != before {
+            persistSession()
+        }
+        return before - state.openDocuments.count
     }
 
     /// Apply a final “Don’t Save” decision during application termination.
@@ -380,7 +440,10 @@ public final class DocumentSession {
     }
 
     public func writeAutosave(file: BrainstormFile, for id: UUID) throws {
-        let desc = ensureRegistered(id)
+        // Never resurrect a closed document. Earlier ensureRegistered() here
+        // re-appended Untitled seeds after close (onDisappear / late autosave),
+        // which made session.json grow without bound.
+        guard let desc = descriptor(for: id) else { return }
         try writeAutosave(file: file, fileName: desc.autosaveFileName)
         touch(id: id, displayName: displayName(for: file))
     }
@@ -418,15 +481,19 @@ public final class DocumentSession {
     }
 
     /// Load best available content for a document id (user file if clean path, else autosave).
+    ///
+    /// Does **not** create a new session row. Unknown ids load from autosave/file
+    /// when present, otherwise return a blank payload — preventing WindowGroup
+    /// state restoration from minting endless Untitled session ghosts.
     public func restorePayload(for id: UUID) -> RestorePayload {
-        let desc = ensureRegistered(id)
+        let desc = descriptor(for: id)
 
         // Prefer autosave when present — it has the latest edits including unsaved work.
         if let auto = readAutosavePreferringBackup(for: id) {
             let fileURL = resolvedFileURL(for: id)
             // Prefer explicit session dirty/revision flags (seeded autosave ≠ dirty).
             let dirty: Bool
-            if desc.contentRevision != desc.savedRevision || desc.isDirty {
+            if let desc, desc.contentRevision != desc.savedRevision || desc.isDirty {
                 dirty = desc.isDirty || desc.contentRevision != desc.savedRevision
             } else if let fileURL, let disk = try? BrainstormCodec.load(from: fileURL) {
                 // Autosaves are always canonical v3, while a clean user file
@@ -450,7 +517,7 @@ public final class DocumentSession {
         }
 
         if let fileURL = resolvedFileURL(for: id), let file = try? BrainstormCodec.load(from: fileURL) {
-            // Mirror into autosave (best-effort).
+            // Mirror into autosave (best-effort) only for live session docs.
             try? writeAutosave(file: file, for: id)
             return RestorePayload(
                 root: file.root,
@@ -492,9 +559,24 @@ public final class DocumentSession {
     /// `registerNewDocument` seeds an empty autosave, but that is a launch
     /// implementation detail rather than user work that should bypass Welcome.
     private func isRestorable(_ descriptor: OpenDocumentDescriptor) -> Bool {
-        descriptor.filePathHint != nil
-            || descriptor.isDirty
+        if let path = descriptor.filePathHint {
+            // Stale temp/test paths must not keep documents "restorable" forever.
+            return fileManager.fileExists(atPath: path)
+        }
+        return descriptor.isDirty
             || descriptor.contentRevision != descriptor.savedRevision
+    }
+
+    /// Clean blank untitled (or dead path) — discard recovery on close.
+    private func shouldDiscardAutosave(for descriptor: OpenDocumentDescriptor) -> Bool {
+        !isRestorable(descriptor)
+    }
+
+    private func removeAutosaveFiles(for descriptor: OpenDocumentDescriptor) {
+        let url = autosaveDirectory.appendingPathComponent(descriptor.autosaveFileName)
+        try? fileManager.removeItem(at: url)
+        try? fileManager.removeItem(at: url.appendingPathExtension("bak"))
+        try? fileManager.removeItem(at: url.appendingPathExtension("tmp"))
     }
 
     private static func canonicalPath(_ url: URL) -> String {

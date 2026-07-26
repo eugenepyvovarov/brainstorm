@@ -98,6 +98,9 @@ struct PresentationFullScreenLifecycleTests {
 struct DelayedNoteAutosaveLifecycleTests {
     @Test func synchronousAutosaveConsumesDelayedWriteBeforeClose() async throws {
         let documentID = UUID()
+        // Autosave must not mint session rows; tests register the document
+        // the same way ContentView does before any recovery write.
+        _ = DocumentSession.shared.ensureRegistered(documentID)
         let store = BrainstormStore(
             documentID: documentID,
             root: .root(),
@@ -115,6 +118,7 @@ struct DelayedNoteAutosaveLifecycleTests {
 
     @Test func explicitCancellationPreventsDiscardedSessionFromReturning() async throws {
         let documentID = UUID()
+        _ = DocumentSession.shared.ensureRegistered(documentID)
         let store = BrainstormStore(
             documentID: documentID,
             root: .root(),
@@ -133,6 +137,7 @@ struct DelayedNoteAutosaveLifecycleTests {
 
     @Test func editorTeardownAfterFinalCloseCannotRecreateSession() async throws {
         let documentID = UUID()
+        _ = DocumentSession.shared.ensureRegistered(documentID)
         let store = BrainstormStore(
             documentID: documentID,
             root: .root(),
@@ -157,6 +162,7 @@ struct DelayedNoteAutosaveLifecycleTests {
 
     @Test func returningToOriginalNoteSynchronouslyReplacesRecovery() throws {
         let documentID = UUID()
+        _ = DocumentSession.shared.ensureRegistered(documentID)
         let original = NodeNote(bodyMarkdown: "Original")
         let store = BrainstormStore(
             documentID: documentID,
@@ -181,6 +187,7 @@ struct DelayedNoteAutosaveLifecycleTests {
 
     @Test func cancellingNoteSynchronouslyReplacesRecovery() throws {
         let documentID = UUID()
+        _ = DocumentSession.shared.ensureRegistered(documentID)
         let original = NodeNote(bodyMarkdown: "Original")
         let store = BrainstormStore(
             documentID: documentID,
