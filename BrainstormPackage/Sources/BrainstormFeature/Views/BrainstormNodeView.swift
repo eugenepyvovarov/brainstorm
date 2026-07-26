@@ -71,21 +71,26 @@ struct BrainstormNodeView: View {
 
     // MARK: - Derived
 
-    /// Selection or live hover (including sticky accessory travel).
+    /// Card chrome highlight (selection border / glass). Independent of hover-only
+    /// accessory buttons (+, Note, fold).
     private var isInteractionHighlighted: Bool {
         isSelected || isHovered
     }
 
+    /// Hover-only: + is not tied to selection so the active node stays quiet
+    /// until the pointer is over it (with sticky hover for the accessory gap).
     private var showNodeWell: Bool {
-        // Dimmed (out-of-focus) nodes stay fully usable — well still appears on hover/select.
-        !isExporting && !isEditing && isInteractionHighlighted
+        !isExporting && !isEditing && isHovered
     }
 
+    /// Hover-only note pill (same rule as +).
     private var showNotePill: Bool {
-        // The note action remains available while the selected node title is
-        // being edited; opening it commits the title through the existing
-        // canvas callback before entering the centered note workspace.
-        !isExporting && showNoteAction && isInteractionHighlighted
+        !isExporting && showNoteAction && isHovered
+    }
+
+    /// Fold chevron: hover-only, same as + / Note.
+    private var showFoldControl: Bool {
+        !isExporting && layoutNode.hasChildren && !isEditing && isHovered
     }
 
     private var displayTitle: String {
@@ -138,7 +143,7 @@ struct BrainstormNodeView: View {
         matchedNodeCard
             .overlay(alignment: .trailing) {
                 HStack(spacing: 8) {
-                    if layoutNode.hasChildren && !isEditing && !isExporting {
+                    if showFoldControl {
                         foldControl
                     }
                     if showNodeWell {
@@ -162,6 +167,7 @@ struct BrainstormNodeView: View {
                     notePill
                         .offset(y: 16)
                         .zIndex(4)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                         .onHover(perform: updateChromeHover)
                 }
             }
@@ -181,6 +187,7 @@ struct BrainstormNodeView: View {
             .opacity(isDimmed ? 0.38 : 1)
             .animation(.easeOut(duration: 0.12), value: showNodeWell)
             .animation(.easeOut(duration: 0.12), value: showNotePill)
+            .animation(.easeOut(duration: 0.12), value: showFoldControl)
             .animation(.easeOut(duration: 0.18), value: isDimmed)
             .onHover(perform: updateChromeHover)
             .onDisappear {
