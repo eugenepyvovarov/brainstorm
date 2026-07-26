@@ -17,11 +17,24 @@ brainstorm help
 
 ## Agent instructions
 
-Install the agent instructions from GitHub:
+Install the agent skill from GitHub (copies into the project’s `.agents/skills/`):
 
 ```sh
 npx skills add eugenepyvovarov/brainstorm
 ```
+
+Installed copies do not auto-upgrade. The skill asks agents to refresh **about once per week**
+(stamp file `.agents/skills/brainstorm/.last-refresh`), and immediately if docs look wrong:
+
+```sh
+npx skills update -y
+# or force this skill only:
+npx skills add eugenepyvovarov/brainstorm -y --skill brainstorm --agent '*'
+date -u +%Y-%m-%dT%H:%M:%SZ > .agents/skills/brainstorm/.last-refresh
+```
+
+The canonical skill body is [`brainstorm-skill/SKILL.md`](brainstorm-skill/SKILL.md); see its
+**Keep this skill current** section for full agent guidance.
 
 ## Highlights
 

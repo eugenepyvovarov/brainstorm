@@ -1,11 +1,88 @@
 ---
 name: brainstorm
-description: Create, inspect, edit, validate, and export Brainstorm `.bs` mind-map files, including node notes and HTML presentation mode, with the installed `brainstorm` CLI. Use when an agent needs to automate a Brainstorm document without driving the macOS app UI.
+description: Create, inspect, edit, validate, and export Brainstorm `.bs` mind-map files, including node notes and HTML presentation mode, with the installed `brainstorm` CLI. Use when an agent needs to automate a Brainstorm document without driving the macOS app UI. Refresh this skill at most once per week with `npx skills update -y` (or immediately if docs/CLI look wrong).
+metadata:
+  source: eugenepyvovarov/brainstorm
+  skill-path: brainstorm-skill/SKILL.md
+  refresh-interval-days: "7"
 ---
 
 # Brainstorm CLI
 
 Use the installed `brainstorm` command to work with portable JSON `.bs` files. It prints JSON to standard output and returns a non-zero status with JSON error details when a command fails.
+
+## Keep this skill current
+
+Installed agent copies of this skill can lag GitHub. The install lives under the project’s
+`.agents/skills/brainstorm/` (or a global agent skills directory) and is **not** auto-upgraded
+on app release.
+
+### Weekly self-refresh (required)
+
+When this skill is loaded for a real Brainstorm task, **check once** whether the install is older
+than **7 days**. If it is (or there is no stamp yet), refresh before other work. Do **not** refresh
+on every message—once per week per machine/project is enough unless the user asks or the skill
+looks incomplete.
+
+Stamp file (project install): `.agents/skills/brainstorm/.last-refresh`
+
+```sh
+# 1) Skip if refreshed within the last 7 days.
+stamp=".agents/skills/brainstorm/.last-refresh"
+if [ -f "$stamp" ] && [ $(( $(date +%s) - $(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp") )) -lt 604800 ]; then
+  : # still fresh
+else
+  # 2) Refresh from GitHub and bump the stamp.
+  npx skills update -y
+  mkdir -p .agents/skills/brainstorm
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$stamp"
+fi
+```
+
+Also refresh immediately (ignore the weekly window) when:
+
+- the user asks to update/refresh skills
+- CLI flags or skill docs disagree with `brainstorm help`
+- the installed file is obviously truncated (far fewer than ~400 lines, missing notes/presentation)
+
+```sh
+# Preferred weekly path: refresh every skills-lock entry from its source.
+npx skills update -y
+
+# Force reinstall this skill only (all agents in the current project).
+npx skills add eugenepyvovarov/brainstorm -y --skill brainstorm --agent '*'
+
+# First-time install in a project that does not have it yet.
+npx skills add eugenepyvovarov/brainstorm -y
+```
+
+After any refresh or reinstall, rewrite the stamp:
+
+```sh
+mkdir -p .agents/skills/brainstorm
+date -u +%Y-%m-%dT%H:%M:%SZ > .agents/skills/brainstorm/.last-refresh
+```
+
+Confirm the installed copy is the full skill (hundreds of lines, includes notes/presentation):
+
+```sh
+wc -l .agents/skills/brainstorm/SKILL.md
+head -n 5 .agents/skills/brainstorm/SKILL.md
+```
+
+**Source of truth**
+
+| Location | Role |
+|----------|------|
+| `brainstorm-skill/SKILL.md` in the Brainstorm repo / `eugenepyvovarov/brainstorm` on GitHub | Canonical skill body |
+| `.agents/skills/brainstorm/SKILL.md` | Local install used by agents (`npx skills` manages this) |
+| `.agents/skills/brainstorm/.last-refresh` | UTC stamp for the weekly self-refresh gate |
+| `skills-lock.json` | Records source + content hash for `npx skills update` |
+
+When editing the skill **inside the Brainstorm repository**, change `brainstorm-skill/SKILL.md`,
+commit and push so GitHub is current, then run `npx skills update -y` (or the force reinstall
+above) so local agent installs pick up the new hash. Do not treat a stale `.agents/` copy as
+authoritative over `brainstorm-skill/SKILL.md`.
 
 ## Locate the installed CLI
 
